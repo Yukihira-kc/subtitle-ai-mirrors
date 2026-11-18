@@ -12,7 +12,7 @@ Vosk の Windows 起動ツールはデスク端末だけで使う。ダウンロ
 
 ## 配備
 
-1. Render で音声認識版専用の Hobby ワークスペースを選び、このリポジトリの render.yaml から新規サービスを作成する。現行版とは別のワークスペースにすると、無料インスタンス時間も分かれる。サービスの /healthz が subtitle-ai-mirrors を返すことを確認する。
+1. Render の my-project ワークスペースを選び、このリポジトリの render.yaml から新規サービスを作成する。現行版と同じワークスペースなので、無料インスタンス時間は月750時間を合算して使う。サービスの /healthz が subtitle-ai-mirrors を返すことを確認する。
 2. 音声版専用の Vercel プロジェクトに、AI_RENDER_ORIGIN として上で作った Render の HTTPS オリジンを設定する。ビルドは node build-vercel.mjs、出力は dist。Azure 版は起動時に public をそのまま使い、同じオリジンのサーバーに接続する。
 3. Azure は専用グループ rg-subtitle-ai-mirrors と専用 Linux F1 プランを作る。Azure CLI と zip を使える環境で、対象サブスクリプションを確認して azure-create.sh を実行する。新規作成用のスクリプトで、同名グループが存在した場合は開始時に停止する。リージョンの初期値は japaneast。F1 の利用可否と空きクォータは対象サブスクリプションに依存する。
 
