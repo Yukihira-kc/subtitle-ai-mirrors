@@ -1,0 +1,68 @@
+name: Sync speech mirror to Azure
+on:
+  push:
+    branches: [azure-sync]
+permissions:
+  id-token: write
+  contents: none
+concurrency:
+  group: azure-speech-mirror-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.repository == 'Yukihira-kc/subtitle-ai-mirrors'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Request sync on the audio app
+        env:
+          AZURE_SYNC_CONFIG: ${{ secrets.AZURE_SYNC_CONFIG }}
+        shell: python
+        run: |
+          import base64
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          audience = 'api://AzureADTokenExchange'
+          issuer_url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']
+          separator = '&' if '?' in issuer_url else '?'
+          request = urllib.request.Request(
+              issuer_url + separator + urllib.parse.urlencode({'audience': audience}),
+              headers={'Authorization': 'Bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              assertion = json.load(response)['value']
+          # Used when configuring the federated credential. Never log the token.
+          claims = assertion.split('.')[1]
+          subject = json.loads(base64.urlsafe_b64decode(claims + '=' * (-len(claims) % 4)))['sub']
+          print('GitHub OIDC subject:', subject)
+          if not os.environ['AZURE_SYNC_CONFIG']:
+              raise SystemExit('Azure authorization is pending. Configure AZURE_SYNC_CONFIG first.')
+          config = json.loads(os.environ['AZURE_SYNC_CONFIG'])
+          guid = r'[a-fA-F0-9-]{36}'
+          resource = config['resourceId']
+          if (not re.fullmatch(guid, config['tenantId']) or not re.fullmatch(guid, config['clientId'])
+                  or not re.fullmatch('/subscriptions/' + guid +
+                      r'/resourceGroups/rg-subtitle-ai-mirrors-[a-z0-9]+/providers/Microsoft\.Web/sites/subtitle-ai-mirrors-th6k36zl5ltja', resource, re.I)):
+              raise SystemExit('Expected the dedicated audio App Service.')
+          fields = {
+              'client_id': config['clientId'],
+              'scope': 'https://management.azure.com/.default',
+              'grant_type': 'client_credentials',
+              'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+              'client_assertion': assertion,
+          }
+          with urllib.request.urlopen(
+              'https://login.microsoftonline.com/' + config['tenantId'] + '/oauth2/v2.0/token',
+              data=urllib.parse.urlencode(fields).encode(), timeout=30
+          ) as response:
+              access = json.load(response)['access_token']
+          request = urllib.request.Request(
+              'https://management.azure.com' + resource + '/sync?api-version=2024-11-01',
+              data=b'', headers={'Authorization': 'Bearer ' + access}, method='POST',
+          )
+          with urllib.request.urlopen(request, timeout=300) as response:
+              print('App Service accepted the sync:', response.status)
