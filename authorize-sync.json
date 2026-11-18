@@ -1,0 +1,94 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "variables": {
+    "group": "[concat('rg-subtitle-ai-mirrors-', uniqueString(subscription().subscriptionId, 'subtitle-ai-mirrors'))]",
+    "install": "authorize-subtitle-ai-sync"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('install')]",
+      "resourceGroup": "[variables('group')]",
+      "properties": {
+        "mode": "Incremental",
+        "expressionEvaluationOptions": {"scope": "inner"},
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "variables": {
+            "app": "subtitle-ai-mirrors-th6k36zl5ltja",
+            "appId": "[resourceId('Microsoft.Web/sites', variables('app'))]",
+            "identity": "id-subtitle-ai-github-sync",
+            "identityId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identity'))]",
+            "role": "[guid(variables('appId'), 'sync-repository-only')]",
+            "roleId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('role'))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[variables('identity')]",
+              "location": "[resourceGroup().location]"
+            },
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+              "apiVersion": "2023-01-31",
+              "name": "[concat(variables('identity'), '/github-azure-sync')]",
+              "dependsOn": ["[variables('identityId')]"],
+              "properties": {
+                "issuer": "https://token.actions.githubusercontent.com",
+                "subject": "repo:Yukihira-kc@287911253/subtitle-ai-mirrors@1462734371:ref:refs/heads/azure-sync",
+                "audiences": ["api://AzureADTokenExchange"]
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleDefinitions",
+              "apiVersion": "2022-04-01",
+              "name": "[variables('role')]",
+              "properties": {
+                "roleName": "[concat('Subtitle AI App Service sync ',uniqueString(variables('appId')))]",
+                "description": "Sync the configured source repository to the speech caption web app.",
+                "type": "customRole",
+                "permissions": [{
+                  "actions": ["Microsoft.Web/sites/sync/action"],
+                  "notActions": [], "dataActions": [], "notDataActions": []
+                }],
+                "assignableScopes": ["[resourceGroup().id]"]
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(variables('appId'),variables('identityId'),variables('role'))]",
+              "scope": "[format('Microsoft.Web/sites/{0}',variables('app'))]",
+              "dependsOn": ["[variables('identityId')]","[variables('roleId')]"],
+              "properties": {
+                "principalId": "[reference(variables('identityId'),'2023-01-31').principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[reference(variables('roleId'),'2022-04-01','Full').id]"
+              }
+            }
+          ],
+          "outputs": {
+            "githubConfig": {
+              "type": "object",
+              "value": {
+                "tenantId": "[subscription().tenantId]",
+                "clientId": "[reference(variables('identityId'),'2023-01-31').clientId]",
+                "resourceId": "[variables('appId')]"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "githubConfig": {
+      "type": "string",
+      "value": "[string(reference(extensionResourceId(subscriptionResourceId('Microsoft.Resources/resourceGroups',variables('group')),'Microsoft.Resources/deployments',variables('install')),'2022-09-01').outputs.githubConfig.value)]"
+    }
+  }
+}
