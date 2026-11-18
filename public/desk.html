@@ -32,7 +32,7 @@ function syncEdit(){
  let b=old.length,c=value.length;
  while(b>a&&c>a&&old[b-1]===value[c-1]){b--;c--}
  const replaced=marks.slice(a,b).filter(Boolean);
- const range=replaced.length?{begin:replaced[0].begin,finish:replaced.at(-1).finish}:null;
+ const range=replaced.length?{...replaced[0],finish:replaced.at(-1).finish,lastRun:replaced.at(-1).lastRun}:null;
  const insertion=Array.from({length:c-a},(_,i)=>value[a+i]==='\n'?null:range);
  marks=marks.slice(0,a).concat(insertion,marks.slice(b));confirmedValue=value;draw()
 }
@@ -49,7 +49,7 @@ $('cut').onclick=()=>{
  const ranges=marks.slice(offset,offset+text.length).filter(Boolean);
  const begin=ranges[0]?.begin,finish=ranges.at(-1)?.finish;
  const approx=!!ranges.length&&(marks.slice(length).some(r=>r&&r.begin===ranges.at(-1).begin)||boxes.some(b=>b.audio&&b.finish>begin));
- boxes.push({id:boxes.length+1,text,begin,finish,audio:ranges.length?clip(begin,finish):null,approx,owner:null,sent:false});
+ boxes.push({id:boxes.length+1,text,begin,finish,audio:ranges.length?clip(begin,finish,ranges[0].firstRun,ranges.at(-1).lastRun):null,approx,owner:null,sent:false});
  publishBox(boxes.at(-1));
  const a=Math.max(0,editor.selectionStart-length),b=Math.max(0,editor.selectionEnd-length);
  editor.setRangeText('',0,length,'start');editor.setSelectionRange(a,b);
@@ -58,7 +58,24 @@ $('cut').onclick=()=>{
 const localVosk='http://127.0.0.1:39462';
 const captureId=crypto.randomUUID();
 let context,media,inputNode,processor,rate,session,queue=[],pcm=[],total=0,draining=null,capturing=false,failed=false;
-let segmentFloor=0;
+// Keep a continuous audio timeline while Vosk starts its word clock at zero each run.
+let archiveRate=0,run=null;
+function archiveBlock(block){
+ const startFrame=run.frames;
+ run.frames+=block.length;
+ let stored=block;
+ if(rate!==archiveRate){
+  const first=Math.round(startFrame*archiveRate/rate);
+  const count=Math.round(run.frames*archiveRate/rate)-first;
+  stored=new Int16Array(count);
+  for(let i=0;i<count;i++){
+   const index=Math.round((first+i)*rate/archiveRate)-startFrame;
+   stored[i]=block[Math.max(0,Math.min(block.length-1,index))];
+  }
+ }
+ blockStarts.push(total);pcm.push(stored);total+=stored.length;
+ run.end=total/archiveRate;
+}
 let seq=0;
 async function request(path,body){
  const stage={start:'日本語モデルの起動',audio:'録音データの認識',finish:'末尾の確定'}[path];
@@ -87,7 +104,7 @@ function updateTranscript(r){
  for(const w of (final?r.result:r.partial_result)||[]){
   // Timed words already available to the editor may have been edited or sent.
   if((w.start+w.end)/2<=lastWordEnd)continue;
-  pending.push({text:w.word,range:{begin:w.start,finish:w.end}});
+  pending.push({text:w.word,range:{begin:run.begin+w.start,finish:run.begin+w.end,firstRun:run,lastRun:run}});
   lastWordEnd=w.end;hasUtterance=true
  }
  if(final&&hasUtterance){
@@ -99,13 +116,18 @@ function updateTranscript(r){
 function releaseInput(){
  capturing=false;
  if(processor){processor.onaudioprocess=null;processor.disconnect()}
- if(inputNode)inputNode.disconnect();
- if(media)media.getTracks().forEach(t=>t.stop());
+ if(inputNode){inputNode.onended=null;inputNode.disconnect()}
+ if(media)media.getTracks().forEach(t=>{t.onended=null;t.stop()});
  if(context&&context.state!=='closed')context.close().catch(()=>{});
- $('stop').disabled=true
+ context=null;media=null;processor=null;inputNode=null;
+ $('level').value=0;$('stop').disabled=true
+}
+function enableStart(){
+ session=null;
+ $('start').disabled=!deskConnected;$('engine').disabled=!deskConnected
 }
 function fail(error){
- failed=true;releaseInput();$('status').textContent='停止　'+error.message; if(!session){failed=false;$('start').disabled=false;$('engine').disabled=false}
+ failed=true;queue.length=0;releaseInput();$('status').textContent='停止　'+error.message;enableStart()
 }
 function drain(){
  if(draining||failed)return;
@@ -113,7 +135,7 @@ function drain(){
   while(queue.length){
    const batch=queue.splice(0,8);
    updateTranscript(await request('audio',encodeAudio(batch)));
-   $('diag').textContent='マイク入力 '+(total/rate).toFixed(1)+' 秒　認識プログラムから応答 '+seq+' 件'
+   $('diag').textContent='マイク入力 '+(run.frames/rate).toFixed(1)+' 秒　認識プログラムから応答 '+seq+' 件'
   }
  })().catch(fail).finally(()=>{draining=null;if(queue.length&&!failed)drain()});
 }
@@ -122,9 +144,11 @@ async function finish(){
  releaseInput();$('status').textContent='末尾を認識中';
  while(draining)await draining;
  if(failed)return;
- try{updateTranscript(await request('finish',''));$('status').textContent='認識終了'}catch(e){fail(e)}
+ try{updateTranscript(await request('finish',''));$('status').textContent='認識終了';enableStart()}catch(e){fail(e)}
 }
 async function startCapture(file){
+ if($('start').disabled)return;
+ failed=false;seq=0;lastWordEnd=-1;hasUtterance=false;
  $('engine').disabled=true;$('start').disabled=true;$('status').textContent='入力を準備中';
  try{
   try {
@@ -132,6 +156,8 @@ async function startCapture(file){
    if(!probe.ok || !(await probe.json()).ready)throw Error();
   }catch{throw Error('デスクPCで Start-Vosk.cmd を起動し、Firefoxでローカルネットワークへの接続を許可してください。')}
   context=new AudioContext();await context.resume();rate=context.sampleRate;
+  archiveRate ||= rate;
+  run={begin:total/archiveRate,end:total/archiveRate,frames:0};
   if(file){
    const buffer=await context.decodeAudioData(await file.arrayBuffer());
    inputNode=context.createBufferSource();inputNode.buffer=buffer
@@ -150,11 +176,11 @@ async function startCapture(file){
    for(let i=0;i<values.length;i++){
     const v=Math.max(-1,Math.min(1,values[i]));block[i]=Math.round(v*(v<0?32768:32767));peak=Math.max(peak,Math.abs(v))
    }
-   blockStarts.push(total);pcm.push(block);total+=block.length;queue.push(block);$('level').value=peak;drain()
+   archiveBlock(block);queue.push(block);$('level').value=peak;drain()
   };
   inputNode.connect(processor);processor.connect(context.destination);
   capturing=true;$('stop').disabled=false;$('status').textContent=file?'録音ファイルを認識中':'録音・認識中';
-  if(file){inputNode.onended=()=>setTimeout(finish,250);inputNode.start()}
+  if(file){const current=run;inputNode.onended=()=>setTimeout(()=>{if(run===current)finish()},250);inputNode.start()}
  }catch(e){fail(e)}
 }
 $('devices').onclick=async()=>{
@@ -169,8 +195,9 @@ $('devices').onclick=async()=>{
 $('start').onclick=()=>startCapture(null);
 $('stop').onclick=finish;
 const blockStarts=[];
-function clip(begin,finish){
- const start=Math.max(0,Math.round((begin-.08)*rate)),stop=Math.min(total,Math.round((finish+.08)*rate));
+function clip(begin,finish,firstRun,lastRun){
+ const rate=archiveRate;
+ const start=Math.max(0,Math.round(Math.max(firstRun.begin,begin-.08)*rate)),stop=Math.min(total,Math.round(Math.min(lastRun.end,finish+.08)*rate));
  if(stop<=start)return null;
  let lo=0,hi=blockStarts.length;
  while(lo<hi){

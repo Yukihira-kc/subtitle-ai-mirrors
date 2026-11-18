@@ -58,6 +58,7 @@ $('cut').onclick=()=>{
 };
 let rate=16000,pcm=[],total=0;
 let context,mic,sourceNode,processor,push,recognizer,recording=false,stopping=false;
+let currentRun=null,sessionKey='';
 const sdkCall=(method)=>new Promise((resolve,reject)=>method(resolve,reject));
 const status=(message)=>{$('status').textContent=message};
 $('devices').onclick=async()=>{
@@ -72,7 +73,8 @@ $('devices').onclick=async()=>{
 function release(){
  recording=false;
  if(processor){processor.onaudioprocess=null;processor.disconnect()}
- if(mic)mic.getTracks().forEach(t=>t.stop());
+ if(mic)mic.getTracks().forEach(t=>{t.onended=null;t.stop()});
+ if(sourceNode)sourceNode.disconnect();
  if(context&&context.state!=='closed')context.close().catch(()=>{});
  $('level').value=0;$('stop').disabled=true;
 }
@@ -85,7 +87,15 @@ async function stop(message){
    await Promise.race([sdkCall((ok,error)=>recognizer.stopContinuousRecognitionAsync(ok,error)),new Promise(resolve=>setTimeout(resolve,4000))]);
   }
  }catch(e){message='認識終了時のエラー '+e}
- finally{recognizer?.close();status(message||'認識終了。再試行はページを再読み込みしてください。')}
+ finally{
+  currentRun=null;
+  try{recognizer?.close()}finally{
+   recognizer=null;push=null;processor=null;sourceNode=null;mic=null;context=null;
+   receive(null,true);
+   stopping=false;$('start').disabled=!deskConnected;$('engine').disabled=!deskConnected;
+   $('partial').textContent='入力待ち';status(message||'認識終了')
+  }
+ }
 }
 function ticks(value){return Number(value)/10000000}
 let hypothesis='',refs=[],locked=0,utterance=1;
@@ -106,11 +116,16 @@ function boxAudio(box){
  box.audio=box.finish>box.begin?clip(box.begin,box.finish):null;
  publishBox(box)
 }
-function receive(result,final){
- if(composing){deferred.push([result,final]);return}
+function receive(result,final,base=0){
+ if(composing){deferred.push([result,final,base]);return}
+ if(!result){
+  // A stopped run can end on an interim hypothesis. Keep its text and timing references.
+  if(hypothesis && editor.value && !editor.value.endsWith('\n'))pending.push({text:'\n',range:null});
+  hypothesis='';refs=[];locked=0;utterance++;appendPending();draw();return
+ }
  const text=result.text||'';
  if(!text&&!final)return;
- const start=ticks(result.offset),stop=ticks(Number(result.offset)+Number(result.duration));
+ const start=base+ticks(result.offset),stop=base+ticks(Number(result.offset)+Number(result.duration));
  let prefix=0,suffix=0;
  while(prefix<Math.min(text.length,hypothesis.length)&&text[prefix]===hypothesis[prefix])prefix++;
  while(suffix<Math.min(text.length,hypothesis.length)-prefix&&text.at(-1-suffix)===hypothesis.at(-1-suffix))suffix++;
@@ -126,7 +141,7 @@ function receive(result,final){
  let cursor=0;
  for(const w of words){
   const pos=text.indexOf(w.Word,cursor);if(pos<0||!w.Word.length)continue;
-  const t=ticks(w.Offset),duration=ticks(w.Duration);
+  const t=base+ticks(w.Offset),duration=ticks(w.Duration);
   for(let n=0;n<w.Word.length;n++)times[pos+n]={begin:t+duration*n/w.Word.length,finish:t+duration*(n+1)/w.Word.length,anchor:true,approx:w.Word.length>1};
   cursor=pos+w.Word.length
  }
@@ -170,10 +185,12 @@ document.addEventListener('keydown',e=>{
  if(!e.repeat&&!composing&&!e.isComposing&&e.keyCode!==229)$('cut').click()
 },true);
 $('start').onclick=async()=>{
+ if($('start').disabled)return;
  if(!$('f0').checked){status('Azure ポータルで Free F0 を確認してください。');return}
- const region=$('region').value.trim().toLowerCase(),key=$('key').value.trim();
+ const region=$('region').value.trim().toLowerCase(),key=$('key').value.trim()||sessionKey;
  if(!/^[a-z0-9]+$/.test(region)||!key){status('リージョンと Speech キーを入力してください。');return}
  if(!window.SpeechSDK){status('Speech SDK の読み込みに失敗しました。');return}
+ const run={start:total};currentRun=run;
  $('engine').disabled=true;$('start').disabled=true;status('マイクと Azure に接続中');
  try{
   context=new AudioContext();await context.resume();
@@ -184,12 +201,12 @@ $('start').onclick=async()=>{
   config.requestWordLevelTimestamps();
   push=SpeechSDK.AudioInputStream.createPushStream(SpeechSDK.AudioStreamFormat.getWaveFormatPCM(rate,16,1));
   recognizer=new SpeechSDK.SpeechRecognizer(config,SpeechSDK.AudioConfig.fromStreamInput(push));
-  recognizer.recognizing=(_,e)=>{receive(e.result,false);$('partial').textContent='途中認識中'};
-  recognizer.recognized=(_,e)=>{if(e.result.reason===SpeechSDK.ResultReason.RecognizedSpeech)receive(e.result,true);$('partial').textContent='発話を待っています'};
-  recognizer.canceled=(_,e)=>{if(e.reason===SpeechSDK.CancellationReason.Error)stop('Azure Speech 停止 '+e.errorCode+' '+(e.errorDetails||'').split(key).join('[キー]'))};
+  recognizer.recognizing=(_,e)=>{if(currentRun!==run)return;receive(e.result,false,run.start/rate);$('partial').textContent='途中認識中'};
+  recognizer.recognized=(_,e)=>{if(currentRun!==run)return;if(e.result.reason===SpeechSDK.ResultReason.RecognizedSpeech)receive(e.result,true,run.start/rate);$('partial').textContent='発話を待っています'};
+  recognizer.canceled=(_,e)=>{if(currentRun===run && e.reason===SpeechSDK.CancellationReason.Error)stop('Azure Speech 停止 '+e.errorCode+' '+(e.errorDetails||'').split(key).join('[キー]'))};
   await sdkCall((ok,error)=>recognizer.startContinuousRecognitionAsync(ok,error));
-  if(stopping)return;
-  $('key').value='';
+  if(currentRun!==run||stopping)return;
+  sessionKey=key;$('key').value='';
   sourceNode=context.createMediaStreamSource(mic);
   processor=context.createScriptProcessor(4096,1,1);
   const ratio=context.sampleRate/rate;
@@ -202,12 +219,12 @@ $('start').onclick=async()=>{
     if(position>=ratio){output.push(Math.round(Math.max(-1,Math.min(1,sum/count))*32767));position-=ratio;sum=0;count=0}
    }
    const block=Int16Array.from(output);blockStarts.push(total);pcm.push(block);total+=block.length;push.write(block.buffer);
-   $('level').value=peak;status('録音・認識中 '+(total/rate).toFixed(1)+' 秒');
-   if(total>=rate*300)stop('1回5分のデモ上限に達しました。');
+   $('level').value=peak;status('録音・認識中 '+((total-run.start)/rate).toFixed(1)+' 秒');
+   if(total-run.start>=rate*300)stop('1回5分のデモ上限に達しました。');
   };
   mic.getAudioTracks()[0].onended=()=>stop('入力機器が切断されました。');
   recording=true;sourceNode.connect(processor);processor.connect(context.destination);$('stop').disabled=false;
- }catch(e){stop('開始できませんでした。'+String(e).split(key).join('[キー]'))}
+ }catch(e){if(currentRun===run)stop('開始できませんでした。'+String(e).split(key).join('[キー]'))}
 };
 $('stop').onclick=()=>stop();
 const blockStarts=[];
