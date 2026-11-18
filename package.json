@@ -1,0 +1,19 @@
+{
+  "name": "subtitle-ai-mirrors",
+  "version": "29.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "4.18.2",
+    "socket.io": "4.7.2"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.2"
+  }
+}

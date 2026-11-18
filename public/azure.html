@@ -1,0 +1,236 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕連係｜音声付き分配卓</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f1;color:#193336;font:17px/1.6 "Yu Gothic UI",Meiryo,sans-serif}header{background:#163a3e;color:white;padding:16px max(4vw,20px);display:flex;align-items:center;justify-content:space-between;gap:12px}h1{font-size:24px;margin:0}main{max-width:1080px;margin:auto;padding:22px}nav,article,section{margin-bottom:16px}article,section{background:white;border-radius:10px;border:1px solid #ced9d5;padding:20px}h2{margin:0 0 8px;font-size:19px}button{background:white;border:1px solid #849b97;border-radius:5px;padding:8px 14px;color:#163a3e;font:inherit;cursor:pointer;margin:3px}button.on,button.primary{background:#146456;color:white}button:disabled{opacity:.42;cursor:default}button:focus-visible,textarea:focus-visible{outline:3px solid #d08915}p{margin:5px 0 10px}small{font-size:14px}#pool{min-height:62px;background:#f1f6f4;padding:9px;margin:12px 0}#pool button{border:0;border-bottom:3px solid transparent;padding:0;margin:0;border-radius:0}#pool .pick{background:#d5eee2;border-color:#168059}textarea{width:100%;font:inherit;font-size:21px;padding:10px;border-radius:5px}.row{padding:8px 0;border-top:1px solid #dde6e2;display:flex;align-items:center;gap:12px}.row span{flex:1}#log{white-space:pre-wrap}footer{color:#526561;font-size:13px}nav button{min-width:96px}
+body.operating header,body.operating main>:not(nav):not(iframe){display:none}body.operating main{margin:0;padding:0;max-width:none}body.operating nav{margin:0;height:46px}iframe.station{display:block;border:0;width:100%;height:calc(100dvh - 46px)}iframe.station[hidden]{display:none}nav a{display:inline-block;margin-right:18px;color:#125e56}#invitations p{display:flex;gap:8px;align-items:center}#invitations input{min-width:0;width:65%;font:inherit}#boxes:empty::after,#log:empty::after{content:"まだありません"}</style><header><h1>字幕連係　分配卓</h1><a href="/" style="color:white">ルーム選択</a></header><main>
+<nav id="roles" aria-label="担当切替"></nav>
+<article id="desk"><label>認識エンジン <select id="engine"><option value="desk.html" >Vosk（無料練習）</option><option value="azure.html" selected>Azure Speech F0</option></select></label><details><summary>担当者の参加リンク</summary><div id="invitations"></div></details><h2>未分配テキスト</h2><p id="diag" role="status">Azure Speech F0</p><p><label>リージョン <input id="region" placeholder="japaneast" autocomplete="off"></label> <label>Speech キー <input id="key" type="password" autocomplete="off"></label></p>
+<p><label><input id="f0" type="checkbox"> このキーの Speech リソースが Free F0 であることを確認した</label></p><p><label>入力機器 <select id="device"><option value="">Windows の既定</option></select></label> <button id="devices">機器を読み込む</button></p><button id="start" class="primary">マイクで認識開始</button><button id="stop" disabled>停止</button> <span id="status" role="status"></span> <meter id="level" min="0" max="1" value="0" aria-label="入力音量"></meter>
+<p id="partial" aria-live="off">認識途中の文字はここに表示します。</p><p>途中認識から編集できます。F12で先頭行を送ります。Enterで箱の境界を作ります。先頭行を送ると、続きがこの欄に残ります。</p><textarea id="pool" rows="6" aria-label="未分配原稿"></textarea><button id="cut" class="primary">先頭行を送る</button> <span id="delivery" role="status"></span></article>
+
+<section><h2>共有ボックス</h2><div id="boxes"></div></section><section><h2>校閲向け送信原稿</h2><div id="log" aria-live="polite"></div></section>
+<footer>音声は選んだ Azure リージョンに送信します。送ったボックスの原稿と音声を、このルームで共有します。　<button type="button" id="end-room">ルームを終了</button></footer></main>
+<script src="/speech-sdk.js"></script><script>
+
+const $=id=>document.getElementById(id);
+
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js"></script><script src="/room-client.js"></script><script src="/desk-room.js"></script><script>
+const editor=$('pool');
+let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
+function appendPending(){
+ if(composing||!pending.length)return;
+ const text=pending.map(item=>item.text).join('');
+ const start=editor.selectionStart,stop=editor.selectionEnd,direction=editor.selectionDirection;
+ editor.setRangeText(text,editor.value.length,editor.value.length,'preserve');
+ editor.setSelectionRange(start,stop,direction);
+ for(const item of pending)for(let i=0;i<item.text.length;i++)marks.push(item.range);
+ pending=[];confirmedValue=editor.value;draw()
+}
+function syncEdit(){
+ const old=confirmedValue,value=editor.value;
+ if(old===value)return;
+ let a=0;
+ while(a<editStart&&a<old.length&&a<value.length&&old[a]===value[a])a++;
+ let b=old.length,c=value.length;
+ while(b>a&&c>a&&old[b-1]===value[c-1]){b--;c--}
+ protect(marks.slice(0,b));
+ const replaced=marks.slice(a,b).filter(Boolean);
+ const range=replaced.length?replaced[0]===replaced.at(-1)?replaced[0]:{get begin(){return replaced[0].begin},get finish(){return replaced.at(-1).finish},approx:true}:null;
+ const insertion=Array.from({length:c-a},(_,i)=>value[a+i]==='\n'?null:range);
+ marks=marks.slice(0,a).concat(insertion,marks.slice(b));confirmedValue=value;draw()
+}
+editor.onbeforeinput=()=>{if(!composing)editStart=editor.selectionStart};
+editor.oninput=()=>{if(!composing)syncEdit()};
+editor.addEventListener('compositionstart',()=>{editStart=editor.selectionStart;composing=true;draw()});
+editor.addEventListener('compositionend',()=>{composing=false;syncEdit();for(const args of deferred.splice(0))receive(...args);appendPending();draw()});
+$('cut').onclick=()=>{
+ if(composing)return;
+ syncEdit();
+ const match=/^(?:[^\S\n]*\n)*([^\n]*\S[^\n]*)(?:\n|$)/.exec(editor.value);
+ if(!match)return;
+ const text=match[1],length=match[0].length,offset=match[0].indexOf(text);
+ const ranges=marks.slice(offset,offset+text.length).filter(Boolean);
+ protect(ranges);
+ const box={id:boxes.length+1,text,ranges,utterance,owner:null,sent:false};
+ boxes.push(box);boxAudio(box);
+ const a=Math.max(0,editor.selectionStart-length),b=Math.max(0,editor.selectionEnd-length);
+ editor.setRangeText('',0,length,'start');editor.setSelectionRange(a,b);
+ marks.splice(0,length);confirmedValue=editor.value;draw();editor.focus()
+};
+let rate=16000,pcm=[],total=0;
+let context,mic,sourceNode,processor,push,recognizer,recording=false,stopping=false;
+const sdkCall=(method)=>new Promise((resolve,reject)=>method(resolve,reject));
+const status=(message)=>{$('status').textContent=message};
+$('devices').onclick=async()=>{
+ try{
+  const permission=await navigator.mediaDevices.getUserMedia({audio:true});
+  try{
+   const inputs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput'&&d.deviceId!=='default');
+   $('device').replaceChildren(new Option('Windows の既定',''),...inputs.map((d,i)=>new Option(d.label||'入力 '+(i+1),d.deviceId)));
+  }finally{permission.getTracks().forEach(t=>t.stop())}
+ }catch(e){status('入力機器を取得できませんでした。'+e.message)}
+};
+function release(){
+ recording=false;
+ if(processor){processor.onaudioprocess=null;processor.disconnect()}
+ if(mic)mic.getTracks().forEach(t=>t.stop());
+ if(context&&context.state!=='closed')context.close().catch(()=>{});
+ $('level').value=0;$('stop').disabled=true;
+}
+async function stop(message){
+ if(stopping)return;
+ stopping=true;release();status('認識を終了中');
+ try{
+  push?.close();
+  if(recognizer){
+   await Promise.race([sdkCall((ok,error)=>recognizer.stopContinuousRecognitionAsync(ok,error)),new Promise(resolve=>setTimeout(resolve,4000))]);
+  }
+ }catch(e){message='認識終了時のエラー '+e}
+ finally{recognizer?.close();status(message||'認識終了。再試行はページを再読み込みしてください。')}
+}
+function ticks(value){return Number(value)/10000000}
+let hypothesis='',refs=[],locked=0,utterance=1;
+const deferred=[];
+function protect(ranges){
+ for(const r of ranges){const i=refs.indexOf(r);if(i>=0)locked=Math.max(locked,i+1)}
+}
+function boxAudio(box){
+ const prior=boxes[boxes.indexOf(box)-1];
+ const valid=box.ranges.filter(r=>Number.isFinite(r.begin)&&r.finish>r.begin);
+ const previousBegin=box.begin,previousFinish=box.finish,previousApprox=box.approx;
+ box.begin=Math.max(prior?.finish||0,valid[0]?.begin||0);
+ box.finish=Math.max(box.begin,valid.at(-1)?.finish||0);
+ box.approx=valid.some(r=>r.approx);
+ const endSample=Math.min(total,Math.round(box.finish*rate));
+ if(box.begin===previousBegin && box.finish===previousFinish && box.approx===previousApprox && box.endSample===endSample)return;
+ box.endSample=endSample;
+ box.audio=box.finish>box.begin?clip(box.begin,box.finish):null;
+ publishBox(box)
+}
+function receive(result,final){
+ if(composing){deferred.push([result,final]);return}
+ const text=result.text||'';
+ if(!text&&!final)return;
+ const start=ticks(result.offset),stop=ticks(Number(result.offset)+Number(result.duration));
+ let prefix=0,suffix=0;
+ while(prefix<Math.min(text.length,hypothesis.length)&&text[prefix]===hypothesis[prefix])prefix++;
+ while(suffix<Math.min(text.length,hypothesis.length)-prefix&&text.at(-1-suffix)===hypothesis.at(-1-suffix))suffix++;
+ const oldEnd=hypothesis.length-suffix,newEnd=text.length-suffix;
+ function mapped(i){
+  if(i<=prefix)return i;
+  if(i>=oldEnd)return i+newEnd-oldEnd;
+  return prefix+Math.round((i-prefix)*(newEnd-prefix)/(oldEnd-prefix))
+ }
+ const times=Array.from({length:text.length},(_,i)=>({begin:start+(stop-start)*i/text.length,finish:start+(stop-start)*(i+1)/text.length,approx:true}));
+ let words=[];
+ try{words=JSON.parse(result.json).NBest?.[0]?.Words||[]}catch{}
+ let cursor=0;
+ for(const w of words){
+  const pos=text.indexOf(w.Word,cursor);if(pos<0||!w.Word.length)continue;
+  const t=ticks(w.Offset),duration=ticks(w.Duration);
+  for(let n=0;n<w.Word.length;n++)times[pos+n]={begin:t+duration*n/w.Word.length,finish:t+duration*(n+1)/w.Word.length,anchor:true,approx:w.Word.length>1};
+  cursor=pos+w.Word.length
+ }
+ // Interpolate unmatched display characters only between adjacent word anchors.
+ let edge=start,left=0;
+ for(let i=0;i<=times.length;i++){
+  if(i<times.length&&times[i].anchor!==true)continue;
+  const right=i<times.length?times[i].begin:stop;
+  for(let j=left;j<i;j++){times[j].begin=edge+(right-edge)*(j-left)/(i-left);times[j].finish=edge+(right-edge)*(j+1-left)/(i-left)}
+  if(i<times.length){edge=times[i].finish;left=i+1}
+ }
+ const oldRefs=refs, keep=Math.max(prefix,locked);
+ const cutIndex=mapped(keep);
+ for(let i=0;i<oldRefs.length;i++){
+  const a=mapped(i),b=mapped(i+1);
+  if(times[a]&&b>a)Object.assign(oldRefs[i],{begin:times[a].begin,finish:times[b-1].finish,approx:times[a].approx||times[b-1].approx})
+ }
+ const stale=new Set(oldRefs.slice(keep));
+ let tail=marks.length;
+ while(tail&&stale.has(marks[tail-1]))tail--;
+ const caret=editor.selectionStart,sel=editor.selectionEnd,dir=editor.selectionDirection;
+ const remainder=text.slice(cutIndex);
+ const rest=final&&!editor.value&&cutIndex>0&&/^[。！？、,.!?]+$/.test(remainder)?'':remainder;
+ editor.setRangeText(rest,tail,editor.value.length,'preserve');
+ editor.setSelectionRange(Math.min(caret,editor.value.length),Math.min(sel,editor.value.length),dir);
+ const fresh=times.slice(cutIndex,cutIndex+rest.length);
+ marks=marks.slice(0,tail).concat(fresh);confirmedValue=editor.value;
+ refs=times.map((r,i)=>i<prefix?oldRefs[i]:r);
+ for(let i=0;i<keep;i++)if(mapped(i+1)>mapped(i))refs[mapped(i)]=oldRefs[i];
+ locked=mapped(locked);hypothesis=text;
+ for(const box of boxes)if(box.utterance===utterance)boxAudio(box);
+ if(final){
+  if(editor.value&&!editor.value.endsWith('\n'))pending.push({text:'\n',range:null});
+  hypothesis='';refs=[];locked=0;utterance++;appendPending()
+ }
+ draw()
+}
+document.addEventListener('keydown',e=>{
+ if(role!=='デスク'||e.key!=='F12')return;
+ e.preventDefault();e.stopPropagation();
+ if(!e.repeat&&!composing&&!e.isComposing&&e.keyCode!==229)$('cut').click()
+},true);
+$('start').onclick=async()=>{
+ if(!$('f0').checked){status('Azure ポータルで Free F0 を確認してください。');return}
+ const region=$('region').value.trim().toLowerCase(),key=$('key').value.trim();
+ if(!/^[a-z0-9]+$/.test(region)||!key){status('リージョンと Speech キーを入力してください。');return}
+ if(!window.SpeechSDK){status('Speech SDK の読み込みに失敗しました。');return}
+ $('engine').disabled=true;$('start').disabled=true;status('マイクと Azure に接続中');
+ try{
+  context=new AudioContext();await context.resume();
+  mic=await navigator.mediaDevices.getUserMedia({audio:$('device').value?{deviceId:{exact:$('device').value}}:true});
+  SpeechSDK.Recognizer.enableTelemetry(false);
+  const config=SpeechSDK.SpeechConfig.fromSubscription(key,region);
+  config.speechRecognitionLanguage='ja-JP';config.outputFormat=SpeechSDK.OutputFormat.Detailed;
+  config.requestWordLevelTimestamps();
+  push=SpeechSDK.AudioInputStream.createPushStream(SpeechSDK.AudioStreamFormat.getWaveFormatPCM(rate,16,1));
+  recognizer=new SpeechSDK.SpeechRecognizer(config,SpeechSDK.AudioConfig.fromStreamInput(push));
+  recognizer.recognizing=(_,e)=>{receive(e.result,false);$('partial').textContent='途中認識中'};
+  recognizer.recognized=(_,e)=>{if(e.result.reason===SpeechSDK.ResultReason.RecognizedSpeech)receive(e.result,true);$('partial').textContent='発話を待っています'};
+  recognizer.canceled=(_,e)=>{if(e.reason===SpeechSDK.CancellationReason.Error)stop('Azure Speech 停止 '+e.errorCode+' '+(e.errorDetails||'').split(key).join('[キー]'))};
+  await sdkCall((ok,error)=>recognizer.startContinuousRecognitionAsync(ok,error));
+  if(stopping)return;
+  $('key').value='';
+  sourceNode=context.createMediaStreamSource(mic);
+  processor=context.createScriptProcessor(4096,1,1);
+  const ratio=context.sampleRate/rate;
+  let sum=0,count=0,position=0;
+  processor.onaudioprocess=e=>{
+   if(!recording)return;
+   const output=[];let peak=0;
+   for(const value of e.inputBuffer.getChannelData(0)){
+    peak=Math.max(peak,Math.abs(value));sum+=value;count++;position++;
+    if(position>=ratio){output.push(Math.round(Math.max(-1,Math.min(1,sum/count))*32767));position-=ratio;sum=0;count=0}
+   }
+   const block=Int16Array.from(output);blockStarts.push(total);pcm.push(block);total+=block.length;push.write(block.buffer);
+   $('level').value=peak;status('録音・認識中 '+(total/rate).toFixed(1)+' 秒');
+   if(total>=rate*300)stop('1回5分のデモ上限に達しました。');
+  };
+  mic.getAudioTracks()[0].onended=()=>stop('入力機器が切断されました。');
+  recording=true;sourceNode.connect(processor);processor.connect(context.destination);$('stop').disabled=false;
+ }catch(e){stop('開始できませんでした。'+String(e).split(key).join('[キー]'))}
+};
+$('stop').onclick=()=>stop();
+const blockStarts=[];
+function clip(begin,finish){
+ const start=Math.max(0,Math.round(begin*rate)),stop=Math.min(total,Math.round(finish*rate));
+ if(stop<=start)return null;
+ let lo=0,hi=blockStarts.length;
+ while(lo<hi){
+  const mid=(lo+hi)>>>1;
+  if(blockStarts[mid]+pcm[mid].length<=start)lo=mid+1;else hi=mid;
+ }
+ const chunks=[];
+ for(let i=lo;i<pcm.length&&blockStarts[i]<stop;i++){
+  chunks.push(pcm[i].subarray(Math.max(0,start-blockStarts[i]),stop-blockStarts[i]));
+ }
+ const raw=new Blob(chunks);
+ const header=new ArrayBuffer(44),v=new DataView(header);
+ for(const [offset,str] of [[0,'RIFF'],[8,'WAVEfmt '],[36,'data']])for(let i=0;i<str.length;i++)v.setUint8(offset+i,str.charCodeAt(i));
+ for(const [offset,n] of [[4,36+raw.size],[16,16],[24,rate],[28,rate*2],[40,raw.size]])v.setUint32(offset,n,true);
+ for(const [offset,n] of [[20,1],[22,1],[32,2],[34,16]])v.setUint16(offset,n,true);
+ return new Blob([header,raw],{type:'audio/wav'})
+}
+draw()
+$('engine').onchange=switchEngine;
+watchDesk();
+</script></html>

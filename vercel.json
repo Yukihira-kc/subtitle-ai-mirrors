@@ -1,0 +1,7 @@
+{
+  "framework": null,
+  "buildCommand": "node build-vercel.mjs",
+  "outputDirectory": "dist",
+  "redirects": [{"source": "/", "destination": "/rooms.html", "permanent": false}],
+  "headers": [{"source": "/mirror-config.js","headers":[{"key":"Cache-Control","value":"no-store"}]}]
+}

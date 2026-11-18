@@ -1,0 +1,195 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕連係｜音声付き分配卓</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f1;color:#193336;font:17px/1.6 "Yu Gothic UI",Meiryo,sans-serif}header{background:#163a3e;color:white;padding:16px max(4vw,20px);display:flex;align-items:center;justify-content:space-between;gap:12px}h1{font-size:24px;margin:0}main{max-width:1080px;margin:auto;padding:22px}nav,article,section{margin-bottom:16px}article,section{background:white;border-radius:10px;border:1px solid #ced9d5;padding:20px}h2{margin:0 0 8px;font-size:19px}button{background:white;border:1px solid #849b97;border-radius:5px;padding:8px 14px;color:#163a3e;font:inherit;cursor:pointer;margin:3px}button.on,button.primary{background:#146456;color:white}button:disabled{opacity:.42;cursor:default}button:focus-visible,textarea:focus-visible{outline:3px solid #d08915}p{margin:5px 0 10px}small{font-size:14px}#pool{min-height:62px;background:#f1f6f4;padding:9px;margin:12px 0}#pool button{border:0;border-bottom:3px solid transparent;padding:0;margin:0;border-radius:0}#pool .pick{background:#d5eee2;border-color:#168059}textarea{width:100%;font:inherit;font-size:21px;padding:10px;border-radius:5px}.row{padding:8px 0;border-top:1px solid #dde6e2;display:flex;align-items:center;gap:12px}.row span{flex:1}#log{white-space:pre-wrap}footer{color:#526561;font-size:13px}nav button{min-width:96px}
+body.operating header,body.operating main>:not(nav):not(iframe){display:none}body.operating main{margin:0;padding:0;max-width:none}body.operating nav{margin:0;height:46px}iframe.station{display:block;border:0;width:100%;height:calc(100dvh - 46px)}iframe.station[hidden]{display:none}nav a{display:inline-block;margin-right:18px;color:#125e56}#invitations p{display:flex;gap:8px;align-items:center}#invitations input{min-width:0;width:65%;font:inherit}#boxes:empty::after,#log:empty::after{content:"まだありません"}</style><header><h1>字幕連係　分配卓</h1><a href="/" style="color:white">ルーム選択</a></header><main>
+<nav id="roles" aria-label="担当切替"></nav>
+<article id="desk"><label>認識エンジン <select id="engine"><option value="desk.html" selected>Vosk（無料練習）</option><option value="azure.html" >Azure Speech F0</option></select></label><details><summary>担当者の参加リンク</summary><div id="invitations"></div></details><h2>未分配テキスト</h2><p id="diag" role="status">Vosk　入力待ち</p><details><summary>デスクPCでVoskを起動する</summary><p><a href="/downloads/vosk-desktop.zip" download>Windows用Vosk起動ツールをダウンロード</a></p><p>ZIPを展開し、デスクPCで「Start-Vosk.cmd」を開きます。起動ツールにこのデスク画面のURLを貼り付けます。初回は日本語モデルを取得します。「Vosk ready」と表示されたら、このページで認識を開始してください。</p></details><p><label>入力機器 <select id="device"><option value="">Windows の既定</option></select></label> <button id="devices">機器を読み込む</button></p><button id="start" class="primary">マイクで認識開始</button><button id="stop" disabled>停止</button> <span id="status" role="status"></span> <meter id="level" min="0" max="1" value="0" aria-label="入力音量"></meter>
+<p>Enterで箱の境界を作ります。先頭行を送ると、続きがこの欄に残ります。</p><textarea id="pool" rows="6" aria-label="未分配原稿"></textarea><button id="cut" class="primary">先頭行を送る</button> <span id="delivery" role="status"></span></article>
+
+<section><h2>共有ボックス</h2><div id="boxes"></div></section><section><h2>校閲向け送信原稿</h2><div id="log" aria-live="polite"></div></section>
+<footer>日本語認識　Vosk ／ 認識はデスクPCで行います。送ったボックスの原稿と音声を、このルームで共有します。　<button type="button" id="end-room">ルームを終了</button></footer></main>
+<script>
+
+const $=id=>document.getElementById(id);
+
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js"></script><script src="/room-client.js"></script><script src="/desk-room.js"></script><script>
+const editor=$('pool');
+let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
+function appendPending(){
+ if(composing||!pending.length)return;
+ const text=pending.map(item=>item.text).join('');
+ const start=editor.selectionStart,stop=editor.selectionEnd,direction=editor.selectionDirection;
+ editor.setRangeText(text,editor.value.length,editor.value.length,'preserve');
+ editor.setSelectionRange(start,stop,direction);
+ for(const item of pending)for(let i=0;i<item.text.length;i++)marks.push(item.range);
+ pending=[];confirmedValue=editor.value;draw()
+}
+function syncEdit(){
+ const old=confirmedValue,value=editor.value;
+ if(old===value)return;
+ let a=0;
+ while(a<editStart&&a<old.length&&a<value.length&&old[a]===value[a])a++;
+ let b=old.length,c=value.length;
+ while(b>a&&c>a&&old[b-1]===value[c-1]){b--;c--}
+ const replaced=marks.slice(a,b).filter(Boolean);
+ const range=replaced.length?{begin:replaced[0].begin,finish:replaced.at(-1).finish}:null;
+ const insertion=Array.from({length:c-a},(_,i)=>value[a+i]==='\n'?null:range);
+ marks=marks.slice(0,a).concat(insertion,marks.slice(b));confirmedValue=value;draw()
+}
+editor.onbeforeinput=()=>{if(!composing)editStart=editor.selectionStart};
+editor.oninput=()=>{if(!composing)syncEdit()};
+editor.addEventListener('compositionstart',()=>{editStart=editor.selectionStart;composing=true;draw()});
+editor.addEventListener('compositionend',()=>{composing=false;syncEdit();appendPending();draw()});
+$('cut').onclick=()=>{
+ if(composing)return;
+ syncEdit();
+ const match=/^(?:[^\S\n]*\n)*([^\n]*\S[^\n]*)(?:\n|$)/.exec(editor.value);
+ if(!match)return;
+ const text=match[1],length=match[0].length,offset=match[0].indexOf(text);
+ const ranges=marks.slice(offset,offset+text.length).filter(Boolean);
+ const begin=ranges[0]?.begin,finish=ranges.at(-1)?.finish;
+ const approx=!!ranges.length&&(marks.slice(length).some(r=>r&&r.begin===ranges.at(-1).begin)||boxes.some(b=>b.audio&&b.finish>begin));
+ boxes.push({id:boxes.length+1,text,begin,finish,audio:ranges.length?clip(begin,finish):null,approx,owner:null,sent:false});
+ publishBox(boxes.at(-1));
+ const a=Math.max(0,editor.selectionStart-length),b=Math.max(0,editor.selectionEnd-length);
+ editor.setRangeText('',0,length,'start');editor.setSelectionRange(a,b);
+ marks.splice(0,length);confirmedValue=editor.value;draw();editor.focus()
+};
+const localVosk='http://127.0.0.1:39462';
+const captureId=crypto.randomUUID();
+let context,media,inputNode,processor,rate,session,queue=[],pcm=[],total=0,draining=null,capturing=false,failed=false;
+let segmentFloor=0;
+let seq=0;
+async function request(path,body){
+ const stage={start:'日本語モデルの起動',audio:'録音データの認識',finish:'末尾の確定'}[path];
+ let response;
+ for(let attempt=0;attempt<3;attempt++){
+  try{
+   response=await fetch(localVosk+'/'+path,{method:'POST',headers:{'Content-Type':'text/plain','X-Client':captureId,'X-Session':session||'','X-Sequence':String(seq)},body,signal:AbortSignal.timeout(path==='start'?90000:20000)});
+   if(!response.ok)throw Error('HTTP '+response.status+' '+(await response.text()).slice(0,160));
+   const data=await response.json();
+   if(path!=='start')seq++;
+   return data
+  }catch(e){
+   if(attempt===2||response?.status>=400)throw Error(stage+'で停止（応答済み '+seq+' 件） '+e.message);
+   $('diag').textContent=stage+'の再接続中';await new Promise(resolve=>setTimeout(resolve,300))
+  }
+ }
+}
+function encodeAudio(batch){
+ const parts=[];
+ for(const block of batch)parts.push(String.fromCharCode(...new Uint8Array(block.buffer,block.byteOffset,block.byteLength)));
+ return btoa(parts.join(''))
+}
+let lastWordEnd=-1,hasUtterance=false;
+function updateTranscript(r){
+ const final='text' in r;
+ for(const w of (final?r.result:r.partial_result)||[]){
+  // Timed words already available to the editor may have been edited or sent.
+  if((w.start+w.end)/2<=lastWordEnd)continue;
+  pending.push({text:w.word,range:{begin:w.start,finish:w.end}});
+  lastWordEnd=w.end;hasUtterance=true
+ }
+ if(final&&hasUtterance){
+  if((pending.length||editor.value)&&!(pending.at(-1)?.text||editor.value).endsWith('\n'))pending.push({text:'\n',range:null});
+  hasUtterance=false
+ }
+ appendPending()
+}
+function releaseInput(){
+ capturing=false;
+ if(processor){processor.onaudioprocess=null;processor.disconnect()}
+ if(inputNode)inputNode.disconnect();
+ if(media)media.getTracks().forEach(t=>t.stop());
+ if(context&&context.state!=='closed')context.close().catch(()=>{});
+ $('stop').disabled=true
+}
+function fail(error){
+ failed=true;releaseInput();$('status').textContent='停止　'+error.message; if(!session){failed=false;$('start').disabled=false;$('engine').disabled=false}
+}
+function drain(){
+ if(draining||failed)return;
+ draining=(async()=>{
+  while(queue.length){
+   const batch=queue.splice(0,8);
+   updateTranscript(await request('audio',encodeAudio(batch)));
+   $('diag').textContent='マイク入力 '+(total/rate).toFixed(1)+' 秒　認識プログラムから応答 '+seq+' 件'
+  }
+ })().catch(fail).finally(()=>{draining=null;if(queue.length&&!failed)drain()});
+}
+async function finish(){
+ if(!capturing)return;
+ releaseInput();$('status').textContent='末尾を認識中';
+ while(draining)await draining;
+ if(failed)return;
+ try{updateTranscript(await request('finish',''));$('status').textContent='認識終了'}catch(e){fail(e)}
+}
+async function startCapture(file){
+ $('engine').disabled=true;$('start').disabled=true;$('status').textContent='入力を準備中';
+ try{
+  try {
+   const probe=await fetch(localVosk+'/ready',{cache:'no-store',signal:AbortSignal.timeout(4000)});
+   if(!probe.ok || !(await probe.json()).ready)throw Error();
+  }catch{throw Error('デスクPCで Start-Vosk.cmd を起動し、Firefoxでローカルネットワークへの接続を許可してください。')}
+  context=new AudioContext();await context.resume();rate=context.sampleRate;
+  if(file){
+   const buffer=await context.decodeAudioData(await file.arrayBuffer());
+   inputNode=context.createBufferSource();inputNode.buffer=buffer
+  }else{
+   media=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,...($('device').value?{deviceId:{exact:$('device').value}}:{})}});
+   inputNode=context.createMediaStreamSource(media);
+   media.getAudioTracks()[0].onended=finish
+  }
+  $('diag').textContent='マイク取得済み　日本語モデルを起動中';
+  session=(await request('start',String(rate))).sid;
+  $('diag').textContent='モデル準備完了　最初の音声を待っています';
+  processor=context.createScriptProcessor(4096,1,1);
+  processor.onaudioprocess=e=>{
+   if(!capturing)return;
+   const values=e.inputBuffer.getChannelData(0),block=new Int16Array(values.length);let peak=0;
+   for(let i=0;i<values.length;i++){
+    const v=Math.max(-1,Math.min(1,values[i]));block[i]=Math.round(v*(v<0?32768:32767));peak=Math.max(peak,Math.abs(v))
+   }
+   blockStarts.push(total);pcm.push(block);total+=block.length;queue.push(block);$('level').value=peak;drain()
+  };
+  inputNode.connect(processor);processor.connect(context.destination);
+  capturing=true;$('stop').disabled=false;$('status').textContent=file?'録音ファイルを認識中':'録音・認識中';
+  if(file){inputNode.onended=()=>setTimeout(finish,250);inputNode.start()}
+ }catch(e){fail(e)}
+}
+$('devices').onclick=async()=>{
+ try{
+  const permission=await navigator.mediaDevices.getUserMedia({audio:true});
+  try{
+   const inputs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput'&&d.deviceId!=='default');
+   $('device').replaceChildren(new Option('Windows の既定',''),...inputs.map((d,i)=>new Option(d.label||'入力 '+(i+1),d.deviceId)));
+  }finally{permission.getTracks().forEach(t=>t.stop())}
+ }catch(e){$('status').textContent='入力機器を取得できませんでした。'+e.message}
+};
+$('start').onclick=()=>startCapture(null);
+$('stop').onclick=finish;
+const blockStarts=[];
+function clip(begin,finish){
+ const start=Math.max(0,Math.round((begin-.08)*rate)),stop=Math.min(total,Math.round((finish+.08)*rate));
+ if(stop<=start)return null;
+ let lo=0,hi=blockStarts.length;
+ while(lo<hi){
+  const mid=(lo+hi)>>>1;
+  if(blockStarts[mid]+pcm[mid].length<=start)lo=mid+1;else hi=mid;
+ }
+ const chunks=[];
+ for(let i=lo;i<pcm.length&&blockStarts[i]<stop;i++){
+  chunks.push(pcm[i].subarray(Math.max(0,start-blockStarts[i]),stop-blockStarts[i]));
+ }
+ const raw=new Blob(chunks);
+ const header=new ArrayBuffer(44),v=new DataView(header);
+ for(const [offset,str] of [[0,'RIFF'],[8,'WAVEfmt '],[36,'data']])for(let i=0;i<str.length;i++)v.setUint8(offset+i,str.charCodeAt(i));
+ for(const [offset,n] of [[4,36+raw.size],[16,16],[24,rate],[28,rate*2],[40,raw.size]])v.setUint32(offset,n,true);
+ for(const [offset,n] of [[20,1],[22,1],[32,2],[34,16]])v.setUint16(offset,n,true);
+ return new Blob([header,raw],{type:'audio/wav'})
+}
+draw()
+$('engine').onchange=switchEngine;
+document.addEventListener('keydown',e=>{if(role==='デスク'&&e.key==='F12'){e.preventDefault();if(!e.isComposing&&!composing&&e.keyCode!==229&&!e.repeat)$('cut').click()}},true);
+watchDesk();
+</script></html>

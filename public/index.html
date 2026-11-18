@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js"></script><script src="/operator.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>字幕連係 v29.8</title>
+
+
+<script>(function(){
+  const font='"ＭＳ ゴシック", "MS Gothic", monospace';
+  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+  function width(columns,size){ctx.font=size+'px '+font;return ctx.measureText('あ').width*columns;}
+  function measure(text,element){
+    const cs=getComputedStyle(element),span=document.createElement('span');
+    span.style.cssText='position:absolute;visibility:hidden;white-space:pre;'+
+      'font-family:'+cs.fontFamily+';font-size:'+cs.fontSize+';font-weight:'+cs.fontWeight+';'+
+      'font-style:'+cs.fontStyle+';letter-spacing:'+cs.letterSpacing+';';
+    span.textContent=text;document.body.appendChild(span);const value=span.getBoundingClientRect().width;span.remove();return value;
+  }
+  // 手動改行だけが送出行の境界。endは原文の削除位置（改行を含む）。
+  function lines(text,columns,size=24){
+    ctx.font=size+'px '+font;const max=width(columns,size),result=[];let start=0;
+    while(start<text.length){
+      const rest=text.slice(start),newline=rest.search(/\r\n|\r|\n/),manualEnd=newline<0?text.length:start+newline;
+      const source=text.slice(start,manualEnd);
+      if(!source){const nl=rest.match(/^\r\n|^\r|^\n/)[0];result.push({text:'',end:manualEnd+nl.length});start=manualEnd+nl.length;continue;}
+      let used=0,end=start,content='';
+      for(const {segment,index} of new Intl.Segmenter('ja',{granularity:'grapheme'}).segment(source)){
+        const w=ctx.measureText(segment).width;if(content&&used+w>max+.01)break;
+        content+=segment;used+=w;end=start+index+segment.length;
+      }
+      if(end===start){const first=[...new Intl.Segmenter('ja',{granularity:'grapheme'}).segment(source)][0];content=first.segment;end=start+first.segment.length;}
+      const hasManualEnd=end===manualEnd,nl=hasManualEnd?text.slice(manualEnd).match(/^\r\n|^\r|^\n/):null;
+      const deleteEnd=hasManualEnd&&nl?manualEnd+nl[0].length:end;
+      result.push({text:content,end:deleteEnd});start=deleteEnd;
+    }
+    return result;
+  }
+  const captionFonts=Object.freeze({
+    'noto-sans-jp':'\"Noto Sans JP\", sans-serif',
+    'noto-serif-jp':'\"Noto Serif JP\", serif'
+  });
+  function captionFont(key){return captionFonts[key]||captionFonts['noto-sans-jp'];}
+  window.CaptionLayout={font,width,measure,lines,captionFont};
+  window.CaptionLayout.wrapLine=function(text,columns){
+    const out=[];let current='',used=0;
+    for(const ch of [...String(text)]){
+      const weight=(ch==='｡'||ch==='､')?0.5:1;
+      if(current&&used+weight>columns+0.5){out.push(current);current='';used=0;}
+      current+=ch;used+=weight;
+    }
+    if(current||!out.length)out.push(current);
+    return out;
+  };
+})();
+</script>
+<script>(function(root){
+  const segmenter=new Intl.Segmenter('ja',{granularity:'grapheme'});
+  const segments=text=>Array.from(segmenter.segment(String(text)),x=>x.segment);
+  const punctuation=ch=>['。','、','｡','､'].includes(ch);
+  const half=ch=>ch==='。'?'｡':ch==='、'?'､':ch;
+  function rows(lines,columns){
+    return lines.flatMap(text=>String(text).replace(/\r\n?/g,'\n').split('\n').flatMap(line=>{
+      const chars=segments(line),out=[];let offset=0;
+      while(offset<chars.length){
+        let end=Math.min(offset+columns,chars.length),row=chars.slice(offset,end);
+        if(end<chars.length&&punctuation(chars[end])){
+          // A punctuation run stays attached to preceding text. At most one hangs outside the nominal width.
+          let runEnd=end;while(runEnd<chars.length&&punctuation(chars[runEnd]))runEnd++;
+          if(runEnd>end+1){
+            let split=end;while(split>offset&&punctuation(chars[split-1]))split--;
+            split=Math.max(offset+1,split-1);
+            row=chars.slice(offset,split);end=split;
+          }else{row.push(half(chars[end]));end++;}
+        }
+        out.push(row);offset=end;
+      }
+      return out.length?out:[[]];
+    }));
+  }
+  function pages(lines,columns,lineCount){const wrapped=rows(lines,columns),out=[];for(let i=0;i<wrapped.length;i+=lineCount)out.push(wrapped.slice(i,i+lineCount).map(r=>r.join('')));return out;}
+  const api={segments,rows,pages};if(typeof module==='object'&&module.exports)module.exports=api;else root.CaptionPagination=api;
+})(typeof window==='object'?window:globalThis);
+</script>
+<style>/* 枠線・余白・スクロールバーを含め、ブラウザーの表示領域に収める。 */
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%;width:100%;overflow:hidden}
+body{margin:0;padding:8px;height:100vh;height:100dvh;width:100%;min-width:0;min-height:0;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+#toolbar{flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
+#toolbar a{color:#68a8ff}
+#toolbar #theme-toggle{margin:0}
+#role-select{min-height:0;overflow:auto}
+#app{flex:1 1 0;min-height:0;min-width:0;width:100%;overflow:hidden}
+#workspace{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:10px;width:100%;height:100%;min-height:0;min-width:0;overflow:hidden}
+#workspace>div{min-width:0;min-height:0;overflow:hidden}
+#columns{display:flex;flex-direction:column;gap:10px}
+.input-row{flex:0 0 auto}
+.input-row{display:grid;grid-template-columns:32px minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:6px;min-height:0;min-width:0}
+.input-row>[id^=label-]{width:100%!important;height:100%!important;min-height:0;min-width:0}
+.input-box{position:relative;min-height:0;min-width:0;overflow:hidden}
+.input-box textarea{display:block;width:100%;height:100%;min-width:0;min-height:0;padding:4px;margin:0;resize:none;white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable}
+.input-guide{position:absolute;top:0;bottom:0;pointer-events:none;white-space:pre;color:transparent}
+.input-guide>span{display:inline-block;height:100%;border-right:1px solid red}
+#log-panel,#search-panel{display:flex;flex-direction:column;gap:8px}
+#log-panel h3,#search-panel h3{flex:0 0 auto;margin:0;font-size:16px;line-height:1.5;overflow-wrap:anywhere}
+#log{flex:1 1 0;width:100%!important;height:auto!important;min-width:0;min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;line-height:1.5;white-space:pre!important}
+.log-entry{display:inline}
+.log-row{display:inline-block;white-space:pre;min-height:1.5em}
+.log-cell{display:inline-block;white-space:pre;padding:0;border:0;margin:0;vertical-align:baseline}
+#searchFrame{display:block;flex:1 1 0;width:100%!important;height:0!important;min-width:0;min-height:0;margin:0}
+
+/* Keep operator panels in a fixed horizontal arrangement at every window width. */
+#app{overflow:auto}
+#workspace{--caption-columns:15;--input-width:calc((min(22, var(--caption-columns)) + 3) * 24px + 74px);--log-width:calc((var(--caption-columns) + .5) * 24px + 36px);min-width:calc(var(--input-width) + var(--log-width) + 180px);min-height:662px;grid-template-columns:var(--input-width) var(--log-width) minmax(160px,1fr);grid-template-rows:auto minmax(0,1fr)}
+#workspace>#toolbar{grid-column:2/4;grid-row:1;overflow:visible}
+#toolbar>#room-nav{flex-basis:100%}
+#columns{display:grid;grid-template-rows:repeat(3,minmax(214px,1fr));grid-column:1;grid-row:1/-1}
+#log-panel{grid-column:2;grid-row:2}
+#search-panel{grid-column:3;grid-row:2}
+
+#workspace .input-box textarea{font-size:24px;line-height:34px}
+#workspace #log{font-size:24px;line-height:36px}
+</style>
+
+<style>
+body {
+  --page-bg:#111;
+  --page-text:#fff;
+  --border:#fff;
+  --offline-bg:#2a2a2a;
+  --offline-text:#777;
+  --offline-border:#444;
+  --label-offline-bg:#333;
+  --label-bg:#555;
+  --label-text:#fff;
+  background:var(--page-bg);
+  color:var(--page-text);
+  font-family:Meiryo, monospace;
+}
+
+body.light-theme {
+  --page-bg:#fff;
+  --page-text:#000;
+  --border:#555;
+  --offline-bg:#eee;
+  --offline-text:#666;
+  --offline-border:#bbb;
+  --label-offline-bg:#ddd;
+  --label-bg:#ddd;
+  --label-text:#000;
+}
+
+textarea, button {
+  background-color:var(--page-bg);
+  color:var(--page-text);
+  border:1px solid var(--border);
+}
+
+#theme-toggle {
+  margin-bottom:8px;
+  padding:6px 12px;
+  cursor:pointer;
+}
+
+.fixed {
+  width:496px;
+  font-family:Consolas, monospace;
+  font-size:24px;
+  line-height:34px;
+  box-sizing:border-box;
+}
+</style>
+<style>.box-card{display:block;width:100%;text-align:left;margin-bottom:6px;padding:8px;white-space:pre-wrap}.box-card.selected{border:2px solid #489bd4}#cards:empty::after{content:"まだありません"}</style></head>
+
+<body>
+<div id="toolbar"><small id="version">v29.8</small>
+<button id="theme-toggle" type="button" aria-pressed="false">白背景に切替</button>
+<span id="column-status">1行15文字</span><span id="room-label"></span></div>
+
+<div id="role-select">
+  <h2>担当を選択</h2>
+  <button id="btnA">A</button>
+  <button id="btnB">B</button>
+  <button id="btnC">C</button> <a href="desk.html">デスク</a>　<a href="reviewer.html">校閲</a>
+</div>
+
+<div id="app" style="display:none"></div>
+
+<script>
+
+// =====================
+let socket;
+let isConnected = false;
+let myRole = null;
+
+let inputs = {
+  A:"",
+  B:"",
+  C:""
+};
+
+let active = null;
+
+let connectedRoles = {
+  A:false,
+  B:false,
+  C:false
+};
+
+let log = [];
+let sharedColumns = 15;
+const operatorId=(crypto.randomUUID?.()||String(Date.now()));
+let operatorComposing = false;
+let logFollowing=true,logScrollFrame=0;
+let layoutPending = false;
+function queueLogScroll(){
+  if(logScrollFrame)cancelAnimationFrame(logScrollFrame);
+  logScrollFrame=requestAnimationFrame(()=>{logScrollFrame=0;const el=document.getElementById('log');if(el&&logFollowing&&!logSelectionActive())el.scrollTop=el.scrollHeight;});
+}
+function applySharedColumns() {
+  document.getElementById('column-status').textContent='1行'+sharedColumns+'文字';
+  if(operatorComposing){layoutPending=true;return;}
+  layoutPending=false;
+  const workspace=document.getElementById('workspace');
+  if(workspace)workspace.style.setProperty('--caption-columns',sharedColumns);
+  document.querySelectorAll('#columns textarea').forEach(el=>{
+    el.style.fontFamily=CaptionLayout.font;
+    const style=getComputedStyle(el);
+    const lineHeight=(el.getBoundingClientRect().height-['borderTopWidth','borderBottomWidth','paddingTop','paddingBottom'].reduce((sum,key)=>sum+parseFloat(style[key]),0))/6;
+    el.style.lineHeight=lineHeight+'px';
+    el.style.fontSize=(24*lineHeight/34)+'px';
+    const row=el.closest('.input-row');
+    const textWidth=CaptionLayout.measure('あ'.repeat(Math.min(sharedColumns,22)+3),el);
+    const fieldEdges=el.offsetWidth-el.clientWidth+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight);
+    const rowEdges=row.firstElementChild.getBoundingClientRect().width+parseFloat(getComputedStyle(row).columnGap);
+    workspace.style.setProperty('--input-width',Math.ceil(textWidth+fieldEdges+rowEdges+1)+'px');
+    const guideX=parseFloat(style.paddingLeft)+CaptionLayout.measure('あ'.repeat(sharedColumns),el);
+    el.style.backgroundImage=`linear-gradient(to right, transparent ${guideX}px, red ${guideX}px, red ${guideX+1}px, transparent ${guideX+1}px)`;
+  });
+  const logEl=document.getElementById('log');
+  if(logEl)logEl.style.fontFamily=CaptionLayout.font;
+  renderOperatorLog();
+}
+
+let renderedLogCount=0,renderedLogColumns=0;
+function logSelectionActive(){
+  const el=document.getElementById('log'),selection=window.getSelection();
+  if(!el||!selection||selection.isCollapsed)return false;
+  for(let i=0;i<selection.rangeCount;i++)if(selection.getRangeAt(i).intersectsNode(el))return true;
+  return false;
+}
+function renderOperatorLog(){
+  const el=document.getElementById('log');if(!el)return;
+  // 選択中の設定変更はコピーが終わってから反映する。
+  const selected=logSelectionActive();
+  if(renderedLogColumns!==sharedColumns&&selected)return;
+  const following=!selected&&logFollowing;
+  const top=el.scrollTop;
+  if(renderedLogColumns!==sharedColumns){el.replaceChildren();renderedLogCount=0;renderedLogColumns=sharedColumns;}
+  while(renderedLogCount<log.length){
+    const item=log[renderedLogCount++];
+    const entry=document.createElement('div');entry.className='log-entry';
+    const rows=CaptionPagination.rows([String(item.text||'')],sharedColumns);
+    rows.forEach((chars,i)=>{
+      const row=document.createElement('span');row.className='log-row';
+      chars.forEach(ch=>{const cell=document.createElement('span');cell.textContent=ch;cell.className='log-cell';cell.style.width=(/[｡､]/.test(ch)?'.5':'1')+'em';row.appendChild(cell);});
+      entry.appendChild(row);
+      if(i<rows.length-1)entry.appendChild(document.createTextNode('\n'));
+    });
+    if(el.childNodes.length)el.appendChild(document.createTextNode('\n'));
+    el.appendChild(entry);
+  }
+  el.scrollTop=following?el.scrollHeight:top;
+  if(following)queueLogScroll();
+}
+document.addEventListener('selectionchange',()=>{if(!logSelectionActive()){if(renderedLogColumns!==sharedColumns)renderOperatorLog();if(logFollowing)queueLogScroll();}});
+
+// =====================
+window.addEventListener("DOMContentLoaded", init);
+
+function init() {
+  initTheme();
+  bindRoleButtons();
+  bindGlobalKeys();
+}
+
+// テーマはこのブラウザだけに保存し、他担当には送信しない。
+function initTheme() {
+  const button = document.getElementById("theme-toggle");
+  function applyTheme(light) {
+    document.body.classList.toggle("light-theme", light);
+    button.textContent = light ? "黒背景に切替" : "白背景に切替";
+    button.setAttribute("aria-pressed", String(light));
+  }
+  let light = false;
+  try {
+    light = localStorage.getItem("subtitle-collab-theme") === "light";
+  } catch (_) { /* 保存不可でも切替は利用可能 */ }
+  applyTheme(light);
+  button.onclick = () => {
+    const next = !document.body.classList.contains("light-theme");
+    applyTheme(next);
+    try {
+      localStorage.setItem("subtitle-collab-theme", next ? "light" : "dark");
+    } catch (_) { /* 保存不可でも切替は利用可能 */ }
+  };
+}
+
+// =====================
+function bindRoleButtons() {
+
+  document.getElementById("btnA").onclick = () => startApp("A");
+  document.getElementById("btnB").onclick = () => startApp("B");
+  document.getElementById("btnC").onclick = () => startApp("C");
+}
+
+// =====================
+function startApp(role) {
+
+  myRole = role;
+
+  document.getElementById("role-select").style.display = "none";
+  document.getElementById("app").style.display = "block";
+
+  createLayout();
+  document.getElementById('workspace').prepend(document.getElementById('toolbar'));
+
+  const logEl=document.getElementById('log');let userScrollUntil=0;
+  for(const name of ['wheel','touchstart','touchmove','pointerdown','pointermove','keydown'])logEl.addEventListener(name,event=>{
+    if(event.type==='pointermove'&&!event.buttons)return;
+    if(event.type==='keydown'&&!['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key))return;
+    userScrollUntil=Date.now()+1000;
+  },{passive:true});
+  logEl.addEventListener('scroll',()=>{const bottom=logEl.scrollHeight-logEl.clientHeight-logEl.scrollTop<=3;if(bottom)logFollowing=true;else if(Date.now()<=userScrollUntil)logFollowing=false;});
+  createInputs();
+  applySharedColumns();
+  let lastInputHeight;
+  new ResizeObserver(([entry])=>{
+    const height=entry.contentRect.height;
+    if(height===lastInputHeight)return;
+    lastInputHeight=height;
+    applySharedColumns();
+  }).observe(document.getElementById('columns'));
+  new ResizeObserver(()=>{if(logFollowing)queueLogScroll();}).observe(document.getElementById('workspace'));
+  document.fonts.ready.then(applySharedColumns);
+  bindBoxControls();refreshOffers();prepareOutput().catch(()=>{});
+  connectSocket();
+}
+
+// =====================
+function createLayout() {
+
+  document.getElementById("app").innerHTML = `
+    <div id="workspace">
+
+      <div id="columns"></div>
+
+      <div id="log-panel">
+        <h3>ログ</h3>
+
+        <div id="log" class="fixed" style="
+          height:400px;
+          overflow-y:scroll;
+          border:1px solid var(--border);
+          padding:4px;
+          white-space:pre-wrap;
+          overflow-wrap:anywhere;
+        "></div>
+      </div>
+
+      <div id="search-panel">
+        <h3>共有ボックス</h3><div id="cards" style="overflow:auto;flex:1"></div><div><button id="take">取得 F1</button><button id="replay">聞き直し F2</button><span id="owner"></span> <button id="warm-output" type="button">音声を準備</button><small id="output-state"></small> <span id="notice" role="status"></span></div>
+      </div>
+
+    </div>
+  `;
+}
+
+// =====================
+function getOrder() {
+
+  if (myRole === "A") return ["C","A","B"];
+  if (myRole === "B") return ["A","B","C"];
+  if (myRole === "C") return ["B","C","A"];
+
+  return ["A","B","C"];
+}
+
+// =====================
+function createInputs() {
+
+  const columns = document.getElementById("columns");
+
+  columns.innerHTML = getOrder().map(k => `
+    <div class="input-row">
+
+      <div
+        id="label-${k}"
+        style="
+          width:40px;
+          height:180px;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          background:#555;
+          color:white;
+        ">
+      </div>
+
+      <div class="input-box"><textarea id="input-${k}" rows="6" class="fixed" aria-label="${k}担当入力欄"></textarea></div>
+
+    </div>
+  `).join("");
+
+  ["A","B","C"].forEach(k => {
+
+    const field=document.getElementById('input-'+k);
+    field.addEventListener('compositionstart',()=>{if(k===myRole)operatorComposing=true;});
+    field.addEventListener('compositionend',()=>{if(k===myRole){operatorComposing=false;if(layoutPending)requestAnimationFrame(applySharedColumns);}});
+
+    document.getElementById("input-" + k).oninput = e => {
+
+      inputs[k] = e.target.value;
+
+      if (socket && isConnected) {
+
+        socket.emit("typing", {
+          key:k,
+          value:e.target.value
+        });
+      }
+    };
+  });
+
+  updateUI();
+}
+
+// =====================
+function setGuideLine() {
+
+  const span = document.createElement("span");
+
+  span.style.font = "24px Consolas";
+  span.innerText = "あ".repeat(sharedColumns);
+
+  document.body.appendChild(span);
+
+  const w = span.getBoundingClientRect().width;
+
+  document.body.removeChild(span);
+
+  document.querySelectorAll("textarea").forEach(el => {
+
+    el.style.backgroundImage = `
+      linear-gradient(
+        to right,
+        transparent ${w}px,
+        red ${w}px,
+        red ${w + 1}px,
+        transparent ${w + 1}px
+      )
+    `;
+  });
+}
+
+// =====================
+function connectSocket() {
+
+  socket = SubtitleConnection.connect();
+  socket.on('box',box=>{paintBox(box);refreshOffers()});
+  socket.on('settings', s => { sharedColumns=s.columns;applySharedColumns(); });
+  socket.on('roleError', message => { alert(message);const url=new URL(location.href);url.searchParams.delete('role');location.replace(url); });
+  socket.on('operatorSnapshot', data=>{
+    epoch=data.session;roomBoxes.clear();cards.clear();document.querySelector('#cards').replaceChildren();data.boxes.forEach(paintBox);refreshOffers();
+    log=data.raw;renderedLogCount=0;renderedLogColumns=0;renderOperatorLog();
+  });
+  function registerOperator(){socket.emit('register',{key:myRole,operatorId},result=>{
+    if(!result?.ok)return;
+    isConnected=true;connectedRoles[myRole]=true;
+    const field=document.getElementById('input-'+myRole);inputs[myRole]=field.value;
+    socket.emit('typing',{key:myRole,value:field.value});updateUI();
+  });}
+  socket.on('version',v=>{document.getElementById('version').textContent=v==='v29'||v==='v29.8'?'v29.8':'v29.8 / サーバー '+v;});
+
+  // =====================
+  socket.on("connect", () => {
+
+    isConnected = false;
+    registerOperator();
+  });
+
+  // =====================
+  socket.on("disconnect", () => {
+
+    isConnected = false;
+
+    if (myRole) {
+      connectedRoles[myRole] = false;
+    }
+
+    updateUI();
+  });
+
+  // =====================
+  socket.on("presence", presence => {
+
+    connectedRoles = {
+      A:!!presence.A,
+      B:!!presence.B,
+      C:!!presence.C
+    };
+
+    // 未接続になった他担当の古い入力内容を消す
+    ["A","B","C"].forEach(k => {
+
+      if (k !== myRole && !connectedRoles[k]) {
+        inputs[k] = "";
+      }
+    });
+
+    updateUI();
+  });
+
+  // =====================
+  socket.on("typing", ({key,value}) => {
+
+    if(key!==myRole)inputs[key] = value;
+
+    updateUI();
+  });
+
+  // =====================
+  socket.on("log", data => {
+
+    if(log.some(item=>item.id===data.id))return;
+    log.push(data);
+    renderOperatorLog();
+  });
+
+  // =====================
+  socket.on("active", next => {
+
+    active = next;
+
+    updateUI();
+  });
+}
+
+// =====================
+function updateUI() {
+
+  ["A","B","C"].forEach(k => {
+
+    const label = document.getElementById("label-" + k);
+    const input = document.getElementById("input-" + k);
+
+    if (!label || !input) {
+      return;
+    }
+
+    const online = connectedRoles[k];
+
+    // =====================
+    // 担当ラベル
+    label.textContent = k===myRole&&!isConnected?k+"（再接続中）":k;
+
+    if (!online) {
+
+      // 未接続
+      label.style.background = "var(--label-offline-bg)";
+      label.style.color = "var(--offline-text)";
+      label.title = "未接続";
+
+    } else if (active === k) {
+
+      // 現在の送信担当
+      label.style.background = "#0a0";
+      label.style.color = "white";
+      label.title = "送信担当";
+
+    } else {
+
+      // 接続中
+      label.style.background = "var(--label-bg)";
+      label.style.color = "var(--label-text)";
+      label.title = "接続中";
+    }
+
+    // =====================
+    // 入力欄
+
+    input.readOnly = (
+      myRole !== k
+    );
+
+    if (!online) {
+
+      input.style.backgroundColor = "var(--offline-bg)";
+      input.style.color = "var(--offline-text)";
+      input.style.borderColor = "var(--offline-border)";
+
+      input.placeholder = "未接続";
+
+    } else {
+
+      input.style.backgroundColor = "";
+      input.style.color = "";
+      input.style.borderColor = "";
+
+      input.placeholder = "";
+    }
+
+    // 自分以外の入力欄だけ同期
+    if (k !== myRole) {
+      input.value = inputs[k] || "";
+    }
+  });
+
+  // 入力通知ではログに触れない。ログの更新はlogイベントと設定変更時だけ。
+}
+
+// =====================
+function bindGlobalKeys() {
+
+  document.addEventListener(
+    "keydown",
+    handleKey
+  );
+}
+
+// =====================
+function onFirstVisualLine(field){
+  const caret=field.selectionDirection==='backward'?field.selectionStart:field.selectionEnd;
+  if(field.value.slice(0,caret).includes('\n'))return false;
+  const style=getComputedStyle(field),mirror=document.createElement('div');
+  for(const name of ['fontFamily','fontSize','fontWeight','fontStyle','letterSpacing','lineHeight','wordBreak','overflowWrap','lineBreak','tabSize'])mirror.style[name]=style[name];
+  mirror.style.cssText+=';position:fixed;visibility:hidden;pointer-events:none;white-space:pre-wrap;overflow-wrap:break-word;padding:0;border:0;box-sizing:content-box;width:'+Math.max(1,field.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight))+'px;';
+  mirror.appendChild(document.createTextNode(field.value.slice(0,caret)));
+  const marker=document.createElement('span');marker.textContent=field.value.slice(caret,caret+1)||'\u200b';mirror.appendChild(marker);document.body.appendChild(mirror);
+  const first=marker.getBoundingClientRect().top-mirror.getBoundingClientRect().top<parseFloat(style.lineHeight)/2;mirror.remove();return first;
+}
+function handleKey(e) {
+  if(e.key==='ArrowUp'&&!e.altKey&&!e.ctrlKey&&!e.metaKey&&!e.isComposing&&!operatorComposing&&e.keyCode!==229&&e.target.id==='input-'+myRole&&onFirstVisualLine(e.target)){e.preventDefault();return;}
+
+  // =====================
+  // F12送信
+
+  if (e.key === "F12") {
+
+    e.preventDefault();
+
+    if (
+      myRole && !e.repeat && !e.isComposing && !operatorComposing && e.keyCode!==229
+    ) {
+      send();
+    }
+  }
+
+  // =====================
+  // F4検索
+
+
+}
+
+</script>
+
+<script>
+function bindBoxControls(){
+ document.querySelector('#warm-output').onclick=()=>prepareOutput().then(showOutputState).catch(e=>notice(e.message));
+ document.querySelector('#take').onclick=takeBox;
+ document.querySelector('#replay').onclick=replayBox;
+}
+document.addEventListener('keydown',e=>{
+ if(!['F1','F2'].includes(e.key)||e.isComposing||operatorComposing||e.keyCode===229)return;
+ e.preventDefault();if(!e.repeat){if(e.key==='F1')takeBox();else replayBox()}
+});
+window.addEventListener('DOMContentLoaded',()=>{
+ const role=new URLSearchParams(location.search).get('role');
+ if(['A','B','C'].includes(role)){startApp(role);document.getElementById('input-'+role).focus()}
+});
+</script></body></html>
