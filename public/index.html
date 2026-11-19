@@ -156,6 +156,25 @@ textarea, button {
   border:1px solid var(--border);
 }
 
+.role-buttons{display:flex;gap:8px;flex-wrap:wrap}
+.role-button{
+  display:inline-grid;
+  place-items:center;
+  min-width:6rem;
+  min-height:44px;
+  padding:6px 12px;
+  border:1px solid var(--border);
+  border-radius:4px;
+  background:var(--page-bg);
+  color:var(--page-text);
+  font:inherit;
+  font-weight:700;
+  text-decoration:none;
+  cursor:pointer;
+}
+.role-button:hover{border-color:#489bd4}
+#autoplay-option{display:flex;align-items:baseline;gap:4px;cursor:pointer}
+
 #theme-toggle {
   margin-bottom:8px;
   padding:6px 12px;
@@ -179,9 +198,13 @@ textarea, button {
 
 <div id="role-select">
   <h2>担当を選択</h2>
-  <button id="btnA">A</button>
-  <button id="btnB">B</button>
-  <button id="btnC">C</button> <a href="desk.html">デスク</a>　<a href="reviewer.html">校閲</a>
+  <div class="role-buttons">
+    <button id="btnA" class="role-button" type="button">A</button>
+    <button id="btnB" class="role-button" type="button">B</button>
+    <button id="btnC" class="role-button" type="button">C</button>
+    <a class="role-button" href="desk.html">デスク</a>
+    <a class="role-button" href="reviewer.html">校閲</a>
+  </div>
 </div>
 
 <div id="app" style="display:none"></div>
@@ -369,7 +392,10 @@ function createLayout() {
       </div>
 
       <div id="search-panel">
-        <h3>共有ボックス</h3><div id="cards" style="overflow:auto;flex:1"></div><div><button id="take">取得 F1</button><button id="replay">聞き直し F2</button><span id="owner"></span> <button id="warm-output" type="button">音声を準備</button><small id="output-state"></small> <span id="notice" role="status"></span></div>
+        <h3>音声認識テキスト</h3>
+        <div id="cards" style="overflow:auto;flex:1"></div>
+        <label id="autoplay-option"><input id="autoplay-on-take" type="checkbox">取得時に音声を自動再生</label>
+        <div><button id="take" type="button">取得 F1</button><button id="replay" type="button">聞き直し F2</button><span id="owner"></span> <button id="warm-output" type="button">音声を準備</button><small id="output-state"></small> <span id="notice" role="status"></span></div>
       </div>
 
     </div>
@@ -666,12 +692,16 @@ function handleKey(e) {
 
 <script>
 function bindBoxControls(){
+ const autoplay=document.querySelector('#autoplay-on-take');
+ const key='subtitle-ai-mirror:autoplay-on-take';
+ try{autoplay.checked=localStorage.getItem(key)==='true'}catch{}
+ autoplay.onchange=()=>{try{localStorage.setItem(key,String(autoplay.checked))}catch{}};
  document.querySelector('#warm-output').onclick=()=>prepareOutput().then(showOutputState).catch(e=>notice(e.message));
  document.querySelector('#take').onclick=takeBox;
  document.querySelector('#replay').onclick=replayBox;
 }
 document.addEventListener('keydown',e=>{
- if(!['F1','F2'].includes(e.key)||e.isComposing||operatorComposing||e.keyCode===229)return;
+ if(!myRole||!['F1','F2'].includes(e.key)||e.isComposing||operatorComposing||e.keyCode===229)return;
  e.preventDefault();if(!e.repeat){if(e.key==='F1')takeBox();else replayBox()}
 });
 window.addEventListener('DOMContentLoaded',()=>{

@@ -5,6 +5,7 @@ const sounds = new Map();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const notice = message => {document.querySelector('#notice').textContent = message};
 const commandId = () => Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
+const soundKey = box => epoch+'/'+box.id+'/'+box.version;
 
 function stopReplay() {
   playNumber++;
@@ -32,7 +33,7 @@ async function prepareOutput() {
 }
 
 function loadSound(box) {
-  const key = box.id+'/'+box.version;
+  const key = soundKey(box);
   if (!sounds.has(key)) {
     if (!playback) prepareOutput().catch(()=>{});
     const task = fetch(SubtitleConnection.url+'/ai/api/rooms/'+encodeURIComponent(SubtitleConnection.roomId)+'/clips/'+box.id+'?version='+box.version,
@@ -85,8 +86,8 @@ function refreshOffers() {
   document.querySelector('#take').disabled = !selected || !!owned || !!claiming || sending;
   document.querySelector('#replay').disabled = !owned?.audio;
   document.querySelector('#owner').textContent = owned?'取得中 #'+owned.id:'';
-  const target = owned || roomBoxes.get(selected);
-  const key = target && target.id+'/'+target.version;
+  const target = owned || roomBoxes.get(claiming?.id ?? selected);
+  const key = target && soundKey(target);
   for (const cached of sounds.keys()) if (cached!==key) sounds.delete(cached);
   if (target?.audio) loadSound(target).catch(()=>{});
 }
@@ -113,48 +114,55 @@ function finishComposition(field) {
 async function takeBox() {
   if (claiming || sending || owned || !selected || operatorComposing) return;
   const field=document.getElementById('input-'+myRole);
-  prepareOutput().catch(()=>{});
-  claiming=command('claim',{id:selected}).then(async result=>{
+  const id = selected;
+  const done = command('claim',{id}).then(async result=>{
     if (operatorComposing) await finishComposition(field);
     field.value+=result.acquired;
     field.dispatchEvent(new Event('input')); field.focus();
     field.setSelectionRange(field.value.length,field.value.length);
   });
+  claiming = {id, done};
+  if (document.querySelector('#autoplay-on-take').checked) void replayBox();
+  else prepareOutput().catch(()=>{});
   refreshOffers();
-  try {await claiming} catch(error){notice(error.message)}
+  try {await done} catch(error){notice(error.message)}
   finally {claiming=null; refreshOffers()}
 }
 
 async function replayBox() {
+  const pending = claiming;
+  const id = pending?.id ?? owned?.id;
+  if (!id || sending || (!pending && !owned.audio)) return;
+  stopReplay();
+  const ticket = playNumber, session = epoch;
+  const canPlay = () => ticket === playNumber && session === epoch && !sending;
   try {
-    const resumed=prepareOutput();
-    if (claiming) await claiming;
-    if (!owned?.audio) return;
-    stopReplay();
-    const ticket=playNumber, id=owned.id;
-    let buffer;
-    for (;;) {
-      const box=owned;
+    // Resume audio inside the key or click gesture, while claim acknowledgement is pending.
+    await Promise.all([prepareOutput(), pending?.done]);
+    while (canPlay() && owned?.id === id && owned.audio) {
+      const box = owned;
+      let buffer;
       try {
-        [buffer]=await Promise.all([loadSound(box),resumed]);
+        buffer = await loadSound(box);
       } catch(error) {
-        if (ticket!==playNumber || owned?.id!==id) return;
-        if (owned.version!==box.version) continue;
+        if (!canPlay() || owned?.id !== id) return;
+        if (owned.version !== box.version) continue;
         throw error;
       }
-      if (ticket!==playNumber || owned?.id!==id) return;
-      if (owned.version===box.version) break;
+      if (!canPlay() || owned?.id !== id) return;
+      if (owned.version !== box.version) continue;
+      node=playback.createBufferSource(); node.buffer=buffer;
+      node.connect(playback.destination); node.start(); notice('');
+      return;
     }
-    node=playback.createBufferSource(); node.buffer=buffer;
-    node.connect(playback.destination); node.start(); notice('');
-  } catch(error){notice(error.message)}
+  } catch(error){if (canPlay()) notice(error.message)}
 }
 
 async function send() {
   if (sending || operatorComposing) return;
   sending=true;
   try {
-    if (claiming) await claiming;
+    if (claiming) await claiming.done;
     const field=document.getElementById('input-'+myRole), text=field.value;
     await command('send',{text,box:owned?.id ?? null});
     if (operatorComposing) await finishComposition(field);

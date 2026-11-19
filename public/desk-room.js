@@ -8,7 +8,7 @@ let uploading=false, retryError='';
 const sleep = ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 function showDelivery(){
-  $('delivery').textContent = retryError || (pendingBoxes.size?'共有ボックスに転送中':'');
+  $('delivery').textContent = retryError || (pendingBoxes.size?'音声認識テキストに送信中':'');
 }
 function publishBox(box) {
   if (!box.key) box.key=recordingKey+'/'+box.id;
@@ -31,7 +31,7 @@ async function uploadBoxes(){
       else {pendingBoxes.delete(key);pendingBoxes.set(key,box)}
       retryError='';
     }catch(error){
-      retryError='共有ボックスへの転送を再試行中　'+error.message;
+      retryError='音声認識テキストへの送信を再試行中　'+error.message;
       showDelivery();await sleep(700);
     }
   }
@@ -48,26 +48,13 @@ function showDeskBox(box){
   row.children[1].textContent=box.text+(box.audio?'':'　（音声なし）')+(box.approx?'　（音声は前後を含みます）':'');
   row.children[2].textContent=box.sent?'送信済み':box.owner?box.owner+' 取得中':'未取得';
 }
-function addDeskLog(item){
-  const line=document.createElement('div');line.textContent=item.key+'　'+item.text;$('log').append(line);
-}
-function showColumnGuide(settings){
-  if(!Number.isInteger(settings?.columns))return;
-  const field=$('pool');
-  const style=getComputedStyle(field),canvas=document.createElement('canvas');
-  const ctx=canvas.getContext('2d');ctx.font=style.fontSize+' '+style.fontFamily;
-  const left=parseFloat(style.paddingLeft)+ctx.measureText('あ'.repeat(settings.columns)).width;
-  field.style.backgroundImage='linear-gradient(to right, transparent '+left+'px, #c43c3c '+left+'px, #c43c3c '+(left+1)+'px, transparent '+(left+1)+'px)';
-}
 function applyDeskState(change){
   if(change.type==='snapshot'){
-    deskRows.clear();$('boxes').replaceChildren();$('log').replaceChildren();
-    change.state.boxes.forEach(showDeskBox);change.state.raw.forEach(addDeskLog);
-    showColumnGuide(change.state.settings);
-  }else if(change.type==='event'){
-    if(change.kind==='box')showDeskBox(change.value);
-    if(change.kind==='log')addDeskLog(change.value);
-    if(change.kind==='settings')showColumnGuide(change.value);
+    deskRows.clear();
+    $('boxes').replaceChildren();
+    change.state.boxes.forEach(showDeskBox);
+  }else if(change.type==='event' && change.kind==='box'){
+    showDeskBox(change.value);
   }
 }
 function draw(){

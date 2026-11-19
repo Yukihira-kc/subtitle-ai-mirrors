@@ -1,12 +1,14 @@
+import argparse
 import ctypes as c
+import errno
 import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import threading
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
 import time
 
 ROOT = Path(__file__).resolve().parent
@@ -14,42 +16,17 @@ os.chdir(ROOT)
 import base64
 import faulthandler
 from concurrent.futures import ThreadPoolExecutor
-faulthandler.enable()
-engine = ThreadPoolExecutor(max_workers=1)
-os.environ['OPENBLAS_NUM_THREADS']='1'
-if os.name == 'nt':
-    dll_path = os.add_dll_directory(str(ROOT / 'engine'))
-    lib = c.CDLL(str(ROOT / 'engine/libvosk.dll'))
-else:
-    lib = c.CDLL(os.environ['VOSK_TEST_LIB'])
-
-def api(name, result, *args):
-    fn = getattr(lib, 'vosk_' + name)
-    fn.restype, fn.argtypes = result, list(args)
-    return fn
-
-ptr, string, integer = c.c_void_p, c.c_char_p, c.c_int
-api('set_log_level', None, integer)(-1)
-model = api('model_new', ptr, string)(b'model')
-if not model:
-    sys.exit('Cannot open the Japanese model. Extract the entire ZIP first.')
-new = api('recognizer_new', ptr, ptr, c.c_float)
-words = api('recognizer_set_words', None, ptr, integer)
-partial_words = api('recognizer_set_partial_words', None, ptr, integer)
-accept = api('recognizer_accept_waveform', integer, ptr, string, integer)
-result = api('recognizer_result', string, ptr)
-partial = api('recognizer_partial_result', string, ptr)
-final = api('recognizer_final_result', string, ptr)
-free = api('recognizer_free', None, ptr)
-
 lock = threading.Lock()
 rec = None
-HOST = "127.0.0.1:39462"
-from urllib.parse import urlsplit
-desk = urlsplit(input("Paste the desk page URL and press Enter: ").strip())
-if desk.scheme != "https" or not desk.hostname or desk.username or desk.password:
-    raise ValueError("An HTTPS desk URL is required")
-SITE = "https://" + desk.netloc
+LOCAL_ADDRESS = '127.0.0.1'
+PORT = 39462
+HOST = f'{LOCAL_ADDRESS}:{PORT}'
+ORIGINS = {
+    'https://subtitle-ai-mirrors.vercel.app',
+    'https://subtitle-ai-mirrors-th6k36zl5ltja.azurewebsites.net',
+}
+PROTOCOL = 'caption-vosk'
+IDLE_SECONDS = 10 * 60
 owner = None
 last_seen = 0
 sid = None
@@ -67,7 +44,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Vary', 'Origin')
         if self.allowed():
-            self.send_header('Access-Control-Allow-Origin', SITE)
+            self.send_header('Access-Control-Allow-Origin', self.headers['Origin'])
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Client, X-Session, X-Sequence')
             self.send_header('Access-Control-Allow-Private-Network', 'true')
@@ -75,7 +52,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
     def allowed(self):
-        return self.headers.get('Origin') == SITE and self.headers.get('Host') == HOST
+        return self.headers.get('Origin') in ORIGINS and self.headers.get('Host') == HOST
 
     def do_OPTIONS(self):
         self.reply(204 if self.allowed() else 403, b'')
@@ -146,7 +123,95 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200,last_reply)
 
 
+class VoskServer(ThreadingHTTPServer):
+    def server_bind(self):
+        if os.name == 'nt':
+            # An external-protocol click can arrive twice while the model is loading.
+            self.allow_reuse_address = False
+            self.allow_reuse_port = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def register_launcher():
+    if os.name != 'nt':
+        sys.exit('Vosk browser registration requires Windows.')
+    import winreg
+    pythonw = ROOT / 'runtime' / 'pythonw.exe'
+    if not pythonw.is_file():
+        sys.exit('Cannot find runtime\\pythonw.exe. Run Register-Vosk.cmd after extracting the ZIP.')
+    bridge = Path(__file__).resolve()
+    # The browser URI is deliberately omitted from the command. The handler
+    # starts the fixed local server and never interprets URL data or flags.
+    command = f'"{pythonw}" "{bridge}" --web'
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf'Software\Classes\{PROTOCOL}') as protocol:
+        winreg.SetValueEx(protocol, '', 0, winreg.REG_SZ, 'URL:Vosk Desk')
+        winreg.SetValueEx(protocol, 'URL Protocol', 0, winreg.REG_SZ, '')
+        with winreg.CreateKey(protocol, r'shell\open\command') as handler:
+            winreg.SetValueEx(handler, '', 0, winreg.REG_SZ, command)
+    print('Vosk registration complete. Select the microphone start button in Firefox.', flush=True)
+
+
 if __name__ == '__main__':
-    with ThreadingHTTPServer(('127.0.0.1',39462), Handler) as server:
-        print('Vosk ready. Return to the desk page and start recognition.',flush=True)
-        server.serve_forever()
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--web', action='store_true')
+    mode.add_argument('--register', action='store_true')
+    if os.name != 'nt':
+        mode.add_argument('--test-origin')
+    options = parser.parse_args()
+    if options.register:
+        register_launcher()
+        sys.exit(0)
+    if getattr(options, 'test_origin', None):
+        ORIGINS.add(options.test_origin)
+
+    # Reserve the port before loading the model so concurrent starts cannot
+    # load a second copy of the model into memory.
+    with VoskServer((LOCAL_ADDRESS, PORT), Handler, bind_and_activate=False) as server:
+        try:
+            server.server_bind()
+        except OSError as exc:
+            if exc.errno not in (errno.EADDRINUSE, 10048, 10013):
+                raise
+            print(f'Vosk port {PORT} is already in use.', flush=True)
+            sys.exit(0)
+
+        if sys.stderr is not None:
+            faulthandler.enable()
+        engine = ThreadPoolExecutor(max_workers=1)
+        os.environ['OPENBLAS_NUM_THREADS']='1'
+        if os.name == 'nt':
+            dll_path = os.add_dll_directory(str(ROOT / 'engine'))
+            lib = c.CDLL(str(ROOT / 'engine/libvosk.dll'))
+        else:
+            lib = c.CDLL(os.environ['VOSK_TEST_LIB'])
+
+        def api(name, result, *args):
+            fn = getattr(lib, 'vosk_' + name)
+            fn.restype, fn.argtypes = result, list(args)
+            return fn
+
+        ptr, string, integer = c.c_void_p, c.c_char_p, c.c_int
+        api('set_log_level', None, integer)(-1)
+        model = api('model_new', ptr, string)(b'model')
+        if not model:
+            sys.exit('Cannot open the Japanese model. Extract the entire ZIP first.')
+        new = api('recognizer_new', ptr, ptr, c.c_float)
+        words = api('recognizer_set_words', None, ptr, integer)
+        partial_words = api('recognizer_set_partial_words', None, ptr, integer)
+        accept = api('recognizer_accept_waveform', integer, ptr, string, integer)
+        result = api('recognizer_result', string, ptr)
+        partial = api('recognizer_partial_result', string, ptr)
+        final = api('recognizer_final_result', string, ptr)
+        free = api('recognizer_free', None, ptr)
+
+        server.server_activate()
+        print('Vosk ready. Return to the desk page and start recognition.', flush=True)
+        if options.web:
+            server.timeout = 2
+            last_seen = time.monotonic()
+            while time.monotonic() - last_seen < IDLE_SECONDS:
+                server.handle_request()
+        else:
+            server.serve_forever()
