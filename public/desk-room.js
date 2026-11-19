@@ -2,13 +2,14 @@ const boxes = []; // Local word timing references for the current recording.
 
 const pendingBoxes = new Map(), deskRows = new Map();
 const role='デスク';
-let deskConnected=false, switchingEngine=false;
+let deskConnected=false, switchingEngine=false, deskRecognitionBusy=false;
+let deskConnectionMessage='';
 const recordingKey = crypto.randomUUID();
 let uploading=false, retryError='';
 const sleep = ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 function showDelivery(){
-  $('delivery').textContent = retryError || (pendingBoxes.size?'音声認識テキストに送信中':'');
+  $('delivery').textContent = deskConnectionMessage || retryError || (pendingBoxes.size?'音声認識テキストに送信中':'');
 }
 function publishBox(box) {
   if (!box.key) box.key=recordingKey+'/'+box.id;
@@ -55,10 +56,22 @@ function applyDeskState(change){
     change.state.boxes.forEach(showDeskBox);
   }else if(change.type==='event' && change.kind==='box'){
     showDeskBox(change.value);
+  }else if(change.type==='ready' || change.type==='waiting'){
+    deskConnected=change.type==='ready';
+    deskConnectionMessage=change.message;
+    updateDeskControls();showDelivery();
   }
 }
 function draw(){
   $('cut').disabled=!deskConnected||composing||!editor.value.trim();
+}
+function updateDeskControls(){
+  $('start').disabled=$('engine').disabled=!deskConnected||deskRecognitionBusy;
+  draw();
+}
+function setDeskRecognitionBusy(busy){
+  deskRecognitionBusy=busy;
+  updateDeskControls();
 }
 function switchEngine(previous){
  const picker=$('engine'),next=picker.value;
@@ -74,34 +87,28 @@ function switchEngine(previous){
    url.hash='select-s0';
  }
  switchingEngine=true;
+ picker.value=previous;
  deskSocket.disconnect();
  location.assign(url);
 }
 async function watchDesk(){
- $('start').disabled=true;
- $('engine').disabled=true;
- try{
-   await roomReady;
-   if(SubtitleConnection.roomId==='practice')$('end-room').textContent='ルームを退出';
-   deskConnected=true;draw();
-   $('start').disabled=false;$('engine').disabled=false;
-   for(const [key,label] of [['A','入力 A'],['B','入力 B'],['reviewer','校閲']]){
-     const url=new URL(roomLink(key),location.href).href;
-     const a=document.createElement('a');
-     a.href=url;a.target='_blank';a.rel='noopener';a.textContent=label+'を開く';$('roles').append(a);
-     const row=document.createElement('p'),name=document.createElement('span'),address=document.createElement('input'),copy=document.createElement('button');
-     name.textContent=label;address.value=url; address.readOnly=true;address.setAttribute('aria-label',label+'の参加リンク');
-     copy.textContent='コピー';copy.onclick=async()=>{
-       try{await navigator.clipboard.writeText(url);copy.textContent='コピー済み'}
-       catch{address.focus();address.select()}
-     };
-     row.append(name,address,copy);$('invitations').append(row);
-   }
-   subscribeRoom(applyDeskState);
- }catch(error){
-   $('delivery').textContent=error.message||'ルームに接続できません';
+ subscribeRoom(applyDeskState);
+ await roomReady;
+ if(SubtitleConnection.roomId==='practice')$('end-room').textContent='ルームを退出';
+ for(const [key,label] of [['A','入力 A'],['B','入力 B'],['reviewer','校閲']]){
+   const url=new URL(roomLink(key),location.href).href;
+   const a=document.createElement('a');
+   a.href=url;a.target='_blank';a.rel='noopener';a.textContent=label+'を開く';$('roles').append(a);
+   const row=document.createElement('p'),name=document.createElement('span'),address=document.createElement('input'),copy=document.createElement('button');
+   name.textContent=label;address.value=url; address.readOnly=true;address.setAttribute('aria-label',label+'の参加リンク');
+   copy.textContent='コピー';copy.onclick=async()=>{
+     try{await navigator.clipboard.writeText(url);copy.textContent='コピー済み'}
+     catch{address.focus();address.select()}
+   };
+   row.append(name,address,copy);$('invitations').append(row);
  }
 }
+addEventListener('pageshow',event=>{if(event.persisted)switchingEngine=false;});
 addEventListener('beforeunload',event=>{
  if(!switchingEngine && (pendingBoxes.size || document.getElementById('pool')?.value.trim())){
    event.preventDefault();event.returnValue='';

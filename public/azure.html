@@ -237,7 +237,7 @@ async function stop(message){
    receive(null,true);
    stopping=false;lockResource(false);
    showKey();
-   $('start').disabled=!deskConnected;$('engine').disabled=!deskConnected;
+   setDeskRecognitionBusy(false);
    $('partial').textContent='入力待ち';status(message||'認識終了')
   }
  }
@@ -344,7 +344,7 @@ $('start').onclick=async()=>{
  if(!window.SpeechSDK){status('Speech SDK の読み込みに失敗しました。');return}
  fields.region=region;fields.key=key;
  const run={start:total};currentRun=run;lockResource(true);
- $('engine').disabled=true;$('start').disabled=true;status('マイクと Azure に接続中');
+ setDeskRecognitionBusy(true);status('マイクと Azure に接続中');
  try{
   context=new AudioContext();await context.resume();
   mic=await navigator.mediaDevices.getUserMedia({audio:$('device').value?{deviceId:{exact:$('device').value}}:true});

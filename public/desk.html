@@ -160,7 +160,7 @@ function releaseInput(){
 }
 function enableStart(){
  session=null;
- $('start').disabled=!deskConnected;$('engine').disabled=!deskConnected
+ setDeskRecognitionBusy(false);
 }
 function fail(error){
  failed=true;queue.length=0;releaseInput();$('status').textContent='停止　'+error.message;enableStart()
@@ -185,7 +185,7 @@ async function finish(){
 async function startCapture(file){
  if($('start').disabled)return;
  failed=false;seq=0;lastWordEnd=-1;hasUtterance=false;
- $('engine').disabled=true;$('start').disabled=true;$('status').textContent='入力を準備中';
+ setDeskRecognitionBusy(true);$('status').textContent='入力を準備中';
  try{
   context=new AudioContext();
   await Promise.all([
