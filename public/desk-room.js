@@ -2,7 +2,7 @@ const boxes = []; // Local word timing references for the current recording.
 
 const pendingBoxes = new Map(), deskRows = new Map();
 const role='デスク';
-let deskConnected=false;
+let deskConnected=false, switchingEngine=false;
 const recordingKey = crypto.randomUUID();
 let uploading=false, retryError='';
 const sleep = ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -61,8 +61,15 @@ function draw(){
   $('cut').disabled=!deskConnected||composing||!editor.value.trim();
 }
 function switchEngine(){
+ if(switchingEngine)return;
+ if((pendingBoxes.size || editor.value.trim()) && !confirm('未送信の原稿と転送中の音声は引き継がれません。認識エンジンを切り替えますか？')){
+   $('engine').value=location.pathname.split('/').pop();
+   return;
+ }
  const url=new URL(roomLink('desk'),location.href);
  url.pathname='/'+$('engine').value;
+ switchingEngine=true;
+ deskSocket.disconnect();
  location.assign(url);
 }
 async function watchDesk(){
@@ -91,7 +98,7 @@ async function watchDesk(){
  }
 }
 addEventListener('beforeunload',event=>{
- if(pendingBoxes.size || document.getElementById('pool')?.value.trim()){
+ if(!switchingEngine && (pendingBoxes.size || document.getElementById('pool')?.value.trim())){
    event.preventDefault();event.returnValue='';
  }
 });
