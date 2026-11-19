@@ -10,20 +10,21 @@ mode=$1
 free_name=$2
 speech_group=${3:-音声認識}
 paid_name=subtitle-speech-s0
-app_name=subtitle-ai-mirrors-th6k36zl5ltja
-app_host=$app_name.azurewebsites.net
+app_host=subtitle-ai-mirrors-th6k36zl5ltja.azurewebsites.net
 
 az account show --query id --output none
 
 # Query one account object, without requesting any keys, to verify its tier.
 require_speech(){
   local name=$1 required_tier=$2
-  local resource='' tier='' kind=''
-  read -r resource tier kind < <(az cognitiveservices account show \
-    --resource-group "$speech_group" --name "$name" --query '[id, sku.name, kind]' --output tsv) || true
+  local row resource tier kind
+  row=$(az cognitiveservices account show --resource-group "$speech_group" --name "$name" \
+    --query '[[id, sku.name, kind]]' --output tsv) || return
+  IFS=$'\t' read -r resource tier kind <<< "$row"
   if [[ -z $resource || $tier != "$required_tier" ||
         ( $kind != SpeechServices && $kind != AIServices && $kind != CognitiveServices ) ]]; then
-    printf 'Speech リソースと価格レベル（%s）を確認してください。対象名: %s\n' "$required_tier" "$name" >&2
+    printf 'Speech リソース %s の価格レベル: %s（期待値: %s）、種別: %s\n' \
+      "$name" "${tier:-未取得}" "$required_tier" "${kind:-未取得}" >&2
     return 1
   fi
   printf '%s\n' "$resource"
@@ -44,10 +45,9 @@ if [[ $mode == inspect ]]; then
   exit 0
 fi
 
-app_group='' detected_host=''
-read -r app_group detected_host < <(az webapp list \
-  --query "[?name=='$app_name'].[resourceGroup, defaultHostName] | [0]" --output tsv) || true
-if [[ -z $app_group || $detected_host != "$app_host" ]]; then
+app_row=$(az webapp list --query "[?defaultHostName=='$app_host'].[resourceGroup, name]" --output tsv)
+IFS=$'\t' read -r app_group app_name <<< "$app_row"
+if [[ -z $app_group || -z $app_name ]]; then
   printf '%s\n' '選択中のサブスクリプションに音声版 App Service がありません。' >&2
   exit 1
 fi
