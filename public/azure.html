@@ -12,19 +12,25 @@
 <main class="desk-main">
   <section class="recognition-settings" aria-label="音声認識の設定">
     <div class="control-row">
-      <label>認識エンジン <select id="engine"><option value="desk.html">Vosk（無料練習）</option><option value="azure.html" selected>Azure Speech F0</option></select></label>
+      <label>認識エンジン <select id="engine" autocomplete="off"><option value="vosk">Vosk（無料練習）</option><option value="F0" selected>Azure Speech（無料 F0）</option><option value="S0">Azure Speech（有料 S0）</option></select></label>
       <label>リージョン <input id="region" placeholder="japaneast" autocomplete="off"></label>
-        <label>Speech キー <input id="key" type="password" autocomplete="off"></label>
-        <label><input id="f0" type="checkbox"> Speech リソースが Free F0 であることを確認した</label>
+      <label>Speech キー <input id="key" type="password" autocomplete="off"></label>
+      <button type="button" id="clear-key" hidden>設定済みキーを消去</button>
+      <label><input id="tier-confirm" type="checkbox" autocomplete="off"> <span id="tier-confirm-label">AzureでこのキーのリソースがFree F0であることを確認した</span></label>
     </div>
     <div class="control-row">
       <label>入力機器 <select id="device"><option value="">Windows の既定</option></select></label>
       <button type="button" id="devices">機器を読み込む</button>
-      <button type="button" id="start" class="primary">マイクで認識開始</button>
+      <button type="button" id="start" class="primary">F0で認識開始</button>
       <button type="button" id="stop" disabled>停止</button>
       <meter id="level" min="0" max="1" value="0" aria-label="入力音量"></meter>
     </div>
-    <div class="status-row"><span id="diag" role="status">Azure Speech F0</span><span id="status" role="status"></span><span id="partial">発話を待っています</span></div>
+    <div class="status-row"><span id="diag" role="status">Free F0のキーで無料枠を使用します。</span><span id="status" role="status"></span><span id="partial">発話を待っています</span></div>
+    <section class="speech-usage" aria-label="Azure Speech の使用時間">
+      <div><strong>F0 今月の使用</strong> <output id="usage-F0">キー未入力</output> / 5時間（無料枠上限） <small id="usage-F0-period"></small></div>
+      <div><strong>S0 今月の使用</strong> <output id="usage-S0">キー未入力</output> <small id="usage-S0-period"></small></div>
+      <button type="button" id="usage-refresh" disabled>使用時間を更新</button>
+    </section>
   </section>
   <div class="desk-workspace">
     <article class="desk-pane" id="desk" aria-labelledby="draft-title">
@@ -39,13 +45,13 @@
     </section>
   </div>
 </main>
-<footer>音声は選んだAzureリージョンに送信します。送信した原稿と音声をこのルームで共有します。</footer>
+<footer>Speech キーはこのページを閉じると消去されます。音声は選んだAzureリージョンに送信します。送信した原稿と音声をこのルームで共有します。</footer>
 
 <script src="/speech-sdk.js"></script><script>
 
 const $=id=>document.getElementById(id);
 
-</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js"></script><script src="/room-client.js"></script><script src="/desk-room.js"></script><script>
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js"></script><script src="/room-client.js"></script><script src="/desk-room.js"></script><script src="/speech-usage.js"></script><script>
 const editor=$('pool');
 let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
 function appendPending(){
@@ -90,9 +96,110 @@ $('cut').onclick=()=>{
 };
 let rate=16000,pcm=[],total=0;
 let context,mic,sourceNode,processor,push,recognizer,recording=false,stopping=false;
-let currentRun=null,sessionKey='';
+let currentRun=null;
 const sdkCall=(method)=>new Promise((resolve,reject)=>method(resolve,reject));
 const status=(message)=>{$('status').textContent=message};
+const credentials = {
+ F0: {region:'', key:'', configured:false},
+ S0: {region:'', key:'', configured:false}
+};
+let selectedTier='F0', confirmedCredentials=null;
+if(location.hash==='#select-s0'){
+ const target=new URL(location.href);target.hash='';
+ history.replaceState(history.state,'',target);
+ const intentKey=SubtitleConnection.storageKey('open-s0');
+ try{
+  if(sessionStorage.getItem(intentKey)==='1')selectedTier='S0';
+  sessionStorage.removeItem(intentKey);
+ }catch{
+  // Private storage may be unavailable. Allow the choice from the same desk page.
+  if(document.referrer){
+   const previous=new URL(document.referrer);
+   if(previous.origin===target.origin && previous.pathname==='/desk.html' &&
+      previous.searchParams.get('room')===target.searchParams.get('room'))selectedTier='S0';
+  }
+ }
+}
+function safeError(error,key){
+ const text=String(error||'');
+ return key?text.split(key).join('[キー]'):text;
+}
+const regionValue=()=>$('region').value.trim().toLowerCase();
+function keyValue(){
+ const fields=credentials[selectedTier];
+ if(fields.configured && fields.region===regionValue() && $('key').value==='')return fields.key;
+ return $('key').value.trim();
+}
+function showKey(){
+ const fields=credentials[selectedTier];
+ $('key').value=fields.configured?'':fields.key;
+ $('key').placeholder=fields.configured?'設定済み（変更は再入力）':'';
+ $('clear-key').hidden=!fields.configured;
+}
+function clearConfirmation(){
+ confirmedCredentials=null;
+ $('tier-confirm').checked=false;
+}
+function showTier(){
+ const paid=selectedTier==='S0', name=paid?'Standard S0':'Free F0';
+ const fields=credentials[selectedTier];
+ $('engine').value=selectedTier;
+ $('region').value=fields.region;
+ showKey();
+ $('tier-confirm-label').textContent='Azureでこのキーのリソースが'+name+'であることを確認した';
+ $('start').textContent=paid?'S0で有料認識を開始':'F0で認識開始';
+ $('diag').textContent=paid?'Standard S0のキーで認識すると、音声時間に応じて課金されます。':'Free F0のキーで無料枠を使用します。';
+}
+function lockResource(locked){
+ for(const id of ['region','key','clear-key','tier-confirm'])$(id).disabled=locked;
+}
+$('engine').onchange=()=>{
+ const picker=$('engine');
+ if(currentRun || stopping || picker.disabled){picker.value=selectedTier;return;}
+ if(picker.value==='vosk'){switchEngine(selectedTier);return;}
+ selectedTier=picker.value;
+ clearConfirmation();showTier();status('');
+};
+$('region').oninput=()=>{
+ const fields=credentials[selectedTier];
+ const region=regionValue();
+ if(fields.region!==region && fields.key){
+  fields.key='';fields.configured=false;showKey();
+  status('このリージョンのSpeechキーを入力してください。');
+ }
+ fields.region=region;
+ clearConfirmation();
+ SpeechUsage.reset(selectedTier, fields.key);
+};
+$('key').oninput=()=>{
+ const fields=credentials[selectedTier];
+ fields.key=$('key').value.trim();fields.configured=false;
+ $('key').placeholder='';$('clear-key').hidden=true;
+ clearConfirmation();
+ SpeechUsage.reset(selectedTier, fields.key);
+};
+$('clear-key').onclick=()=>{
+ const fields=credentials[selectedTier];
+ fields.key='';fields.configured=false;
+ SpeechUsage.reset(selectedTier, false);
+ showKey();clearConfirmation();$('key').focus();status('Speechキーを消去しました。');
+};
+$('tier-confirm').onchange=()=>{
+ confirmedCredentials=$('tier-confirm').checked
+  ? {tier:selectedTier,region:regionValue(),key:keyValue()}
+  : null;
+ const key=keyValue();
+ if(confirmedCredentials && /^[a-z0-9]+$/.test(regionValue()) && key && !tierKeyConflict(key)){
+  SpeechUsage.verify(selectedTier,key);
+ }else{
+  SpeechUsage.reset(selectedTier, key);
+ }
+};
+function tierKeyConflict(key){
+ const fields=credentials[selectedTier],other=credentials[selectedTier==='F0'?'S0':'F0'];
+ return other.key===key && (!fields.configured || other.configured);
+}
+clearConfirmation();showTier();
 $('devices').onclick=async()=>{
  try{
   const permission=await navigator.mediaDevices.getUserMedia({audio:true});
@@ -118,13 +225,19 @@ async function stop(message){
   if(recognizer){
    await Promise.race([sdkCall((ok,error)=>recognizer.stopContinuousRecognitionAsync(ok,error)),new Promise(resolve=>setTimeout(resolve,4000))]);
   }
- }catch(e){message='認識終了時のエラー '+e}
+ }catch(e){
+  message='認識終了時のエラー '+safeError(e,credentials[selectedTier].key);
+ }
  finally{
   currentRun=null;
-  try{recognizer?.close()}finally{
+  try{recognizer?.close()}catch(e){
+   message=message||'認識終了時のエラー '+safeError(e,credentials[selectedTier].key);
+  }finally{
    recognizer=null;push=null;processor=null;sourceNode=null;mic=null;context=null;
    receive(null,true);
-   stopping=false;$('start').disabled=!deskConnected;$('engine').disabled=!deskConnected;
+   stopping=false;lockResource(false);
+   showKey();
+   $('start').disabled=!deskConnected;$('engine').disabled=!deskConnected;
    $('partial').textContent='入力待ち';status(message||'認識終了')
   }
  }
@@ -218,11 +331,19 @@ document.addEventListener('keydown',e=>{
 },true);
 $('start').onclick=async()=>{
  if($('start').disabled)return;
- if(!$('f0').checked){status('Azure ポータルで Free F0 を確認してください。');return}
- const region=$('region').value.trim().toLowerCase(),key=$('key').value.trim()||sessionKey;
+ const region=regionValue(),key=keyValue();
  if(!/^[a-z0-9]+$/.test(region)||!key){status('リージョンと Speech キーを入力してください。');return}
+ if(!$('tier-confirm').checked || confirmedCredentials?.tier!==selectedTier ||
+    confirmedCredentials.region!==region || confirmedCredentials.key!==key){
+  clearConfirmation();status('このキーの料金レベルをAzureで確認し、チェックを入れてください。');return
+ }
+ const fields=credentials[selectedTier];
+ if(tierKeyConflict(key)){
+  status('F0とS0に同じキーが設定されています。Azureで選択したリソースのキーを確認してください。');return
+ }
  if(!window.SpeechSDK){status('Speech SDK の読み込みに失敗しました。');return}
- const run={start:total};currentRun=run;
+ fields.region=region;fields.key=key;
+ const run={start:total};currentRun=run;lockResource(true);
  $('engine').disabled=true;$('start').disabled=true;status('マイクと Azure に接続中');
  try{
   context=new AudioContext();await context.resume();
@@ -235,10 +356,10 @@ $('start').onclick=async()=>{
   recognizer=new SpeechSDK.SpeechRecognizer(config,SpeechSDK.AudioConfig.fromStreamInput(push));
   recognizer.recognizing=(_,e)=>{if(currentRun!==run)return;receive(e.result,false,run.start/rate);$('partial').textContent='途中認識中'};
   recognizer.recognized=(_,e)=>{if(currentRun!==run)return;if(e.result.reason===SpeechSDK.ResultReason.RecognizedSpeech)receive(e.result,true,run.start/rate);$('partial').textContent='発話を待っています'};
-  recognizer.canceled=(_,e)=>{if(currentRun===run && e.reason===SpeechSDK.CancellationReason.Error)stop('Azure Speech 停止 '+e.errorCode+' '+(e.errorDetails||'').split(key).join('[キー]'))};
+  recognizer.canceled=(_,e)=>{if(currentRun===run && e.reason===SpeechSDK.CancellationReason.Error)stop('Azure Speech 停止 '+e.errorCode+' '+safeError(e.errorDetails,key))};
   await sdkCall((ok,error)=>recognizer.startContinuousRecognitionAsync(ok,error));
   if(currentRun!==run||stopping)return;
-  sessionKey=key;$('key').value='';
+  fields.configured=true;showKey();
   sourceNode=context.createMediaStreamSource(mic);
   processor=context.createScriptProcessor(4096,1,1);
   const ratio=context.sampleRate/rate;
@@ -252,11 +373,10 @@ $('start').onclick=async()=>{
    }
    const block=Int16Array.from(output);blockStarts.push(total);pcm.push(block);total+=block.length;push.write(block.buffer);
    $('level').value=peak;status('録音・認識中 '+((total-run.start)/rate).toFixed(1)+' 秒');
-   if(total-run.start>=rate*300)stop('1回5分のデモ上限に達しました。');
   };
   mic.getAudioTracks()[0].onended=()=>stop('入力機器が切断されました。');
   recording=true;sourceNode.connect(processor);processor.connect(context.destination);$('stop').disabled=false;
- }catch(e){if(currentRun===run)stop('開始できませんでした。'+String(e).split(key).join('[キー]'))}
+ }catch(e){if(currentRun===run)stop('開始できませんでした。'+safeError(e,key))}
 };
 $('stop').onclick=()=>stop();
 const blockStarts=[];
@@ -280,6 +400,5 @@ function clip(begin,finish){
  return new Blob([header,raw],{type:'audio/wav'})
 }
 draw()
-$('engine').onchange=switchEngine;
 watchDesk();
 </script></body></html>

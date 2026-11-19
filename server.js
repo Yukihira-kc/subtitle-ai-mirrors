@@ -6,6 +6,7 @@ const app = express();
 const server = http.createServer(app);
 app.get('/healthz', (_, res) => res.json({app:'subtitle-ai-mirrors'}));
 app.get('/', (_, res) => res.redirect('/rooms.html'));
+require('./speech-usage')(app);
 app.use(express.static(path.join(__dirname, 'public')));
 const Pagination=require('./pagination.js');
 const io=new Server(server,{path:'/ai/socket.io',maxHttpBufferSize:9*1024*1024,cors:{origin:'*'}});

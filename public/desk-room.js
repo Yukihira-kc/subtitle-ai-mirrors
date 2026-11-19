@@ -60,14 +60,19 @@ function applyDeskState(change){
 function draw(){
   $('cut').disabled=!deskConnected||composing||!editor.value.trim();
 }
-function switchEngine(){
- if(switchingEngine)return;
+function switchEngine(previous){
+ const picker=$('engine'),next=picker.value;
+ if(switchingEngine || picker.disabled || next===previous){picker.value=previous;return;}
  if((pendingBoxes.size || editor.value.trim()) && !confirm('未送信の原稿と転送中の音声は引き継がれません。認識エンジンを切り替えますか？')){
-   $('engine').value=location.pathname.split('/').pop();
-   return;
+   picker.value=previous;return;
  }
  const url=new URL(roomLink('desk'),location.href);
- url.pathname='/'+$('engine').value;
+ url.pathname=next==='vosk'?'/desk.html':'/azure.html';
+ if(next==='S0'){
+   // The marker travels only with this navigation; a shared link opens at F0.
+   try{sessionStorage.setItem(SubtitleConnection.storageKey('open-s0'),'1');}catch{}
+   url.hash='select-s0';
+ }
  switchingEngine=true;
  deskSocket.disconnect();
  location.assign(url);

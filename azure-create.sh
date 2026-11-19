@@ -18,7 +18,7 @@ if [[ $(az webapp list --query "[?name=='$app'] | length(@)" -o tsv) != 0 ]]; th
 fi
 archive=$(mktemp -d)
 trap 'rm -rf "$archive"' EXIT
-zip -qr "$archive/app.zip" public server.js rooms.js boxes.js pagination.js package.json package-lock.json
+zip -qr "$archive/app.zip" public server.js rooms.js boxes.js pagination.js speech-usage.js package.json package-lock.json
 az group create --name "$group" --location "$location" --tags application=subtitle-ai-mirrors --output none
 az appservice plan create -g "$group" -n "$plan" --is-linux --sku F1 --output none
 az webapp create -g "$group" -p "$plan" -n "$app" --runtime 'NODE:22-lts' --output none

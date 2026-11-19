@@ -103,6 +103,21 @@ details { position: relative; }
 #region { width: 8em; }
 .status-row { min-height: 1.4em; color: #405b58; font-size: .9rem; }
 .status-row :empty { display: none; }
+.speech-usage {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #dbe3e0;
+  font-size: .88rem;
+}
+.speech-usage strong { margin-right: .25em; }
+.speech-usage output { font-variant-numeric: tabular-nums; }
+.speech-usage .usage-limit-reached { color: #a12625; font-weight: 700; }
+.speech-usage small { color: #405b58; }
+.speech-usage button { min-height: 26px; padding-block: 1px; }
 #level { width: 6em; }
 .desk-workspace {
   min-height: 0;
