@@ -1,6 +1,7 @@
 const socket=SubtitleConnection.connect(),$=id=>document.getElementById(id),edit=$('edit');
 let settings={columns:15,mode:'page',keyColor:'#00ff00',fontSize:32,lineCount:2,captionFont:'noto-sans-jp',textColor:'#ffffff',outline:true,fontWeight:'normal'},online={},active=null;
 let throughMode=false;
+const aiReview=ReviewerBoxes.create(SubtitleConnection);
 const columnsStorageKey=SubtitleConnection.storageKey('columns');
 const logBackup=SubtitleLogBackup.create({scope:SubtitleConnection.storageKey('log-backup'),roomId:SubtitleConnection.roomId});
 function savedColumns(){try{const value=Number(localStorage.getItem(columnsStorageKey));return Number.isInteger(value)&&value>=10&&value<=40?value:null;}catch(_){return null;}}
@@ -218,6 +219,7 @@ function loadReviewer(result){
     seen.clear();historyIds.clear();$('sent').textContent='';$('queue').textContent='';
   }
   session=result.session;logBackup.start(session);
+  aiReview.load(result.mode,result.aiBoxes||[]);
   restoreDraft(result,sameRoomSession);
   ready=true;
   applySettings(result.settings);
@@ -234,8 +236,9 @@ function loadReviewer(result){
   else {queueDraftSave();scheduleThrough();}
 }
 socket.on('connect',()=>joinReviewer(socket.id));
+socket.on('aiReviewBox',box=>aiReview.update(box));
 socket.on('reviewItem',receive);socket.on('subtitleLog',addHistory);socket.on('captionLogged',item=>logBackup.add(item));socket.on('roomInfo',info=>logBackup.setRoomName(info.name));socket.on('captionQueue',renderQueue);socket.on('caption',display);socket.on('settings',applySettings);socket.on('throughMode',enabled=>{throughMode=!!enabled;updateThroughMode();scheduleThrough();});socket.on('typing',typing);socket.on('presence',s=>{online=s;monitor();});socket.on('active',s=>{active=s;monitor();});
-socket.on('disconnect',()=>{ready=false;status('切断中：編集内容は保持しています');online={};monitor();buttons();});
+socket.on('disconnect',()=>{aiReview.stopAudio();ready=false;status('切断中：編集内容は保持しています');online={};monitor();buttons();});
 addEventListener('pagehide',()=>socket.disconnect());
 addEventListener('pageshow',event=>{if(event.persisted)socket.connect();});
 $('theme').onclick=()=>{document.body.classList.toggle('light');$('theme').textContent=document.body.classList.contains('light')?'黒背景に切替':'白背景に切替';};

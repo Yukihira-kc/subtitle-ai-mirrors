@@ -10,11 +10,28 @@ require('./speech-usage')(app);
 app.use(express.static(path.join(__dirname, 'public')));
 const Pagination=require('./pagination.js');
 const createReviewerDraft=require('./reviewer-draft');
+const {createAiQueue,createAiBoxReview}=require('./ai-box-review');
+const geminiKey=process.env.GEMINI_API_KEY?.trim();
+const aiRoomCode=process.env.COMPLETE_AI_ACCESS_CODE?.trim();
+const aiSchedule=geminiKey&&aiRoomCode?.length>=16
+  ? createAiQueue(require('./gemini-review').createGeminiReview(geminiKey))
+  : null;
 const io=new Server(server,{path:'/ai/socket.io',maxHttpBufferSize:9*1024*1024,cors:{origin:'*'}});
-function createRoomRuntime(roomId){
+function createRoomRuntime(roomId,mode){
 const channel='room:'+roomId,reviewChannel=channel+':reviewers';
 const broadcast=()=>io.to(channel);
-const boxes = require('./boxes')(broadcast);
+const ai=mode==='complete-ai'?createAiBoxReview({
+  schedule:aiSchedule,
+  clip:(id,version)=>boxes.clip(id,version),
+  notify:card=>{boxes.refresh(card.id);io.to(reviewChannel).emit('aiReviewBox',card);},
+  deliver:(boxId,text)=>{
+    const item={id:++seq,key:'Gemini',boxId,text,at:Date.now()};
+    reviewerDraft.append(item);
+    io.to(reviewChannel).emit('reviewItem',item);
+  },
+  retainReplay:id=>boxes.retainReplay(id),
+}):null;
+const boxes = require('./boxes')(broadcast,{mode,ai});
 const receipts = new Map();
 let columnsInitialized=false;
 const order=['A','B','C'], inputs={A:'',B:'',C:''};
@@ -100,7 +117,7 @@ function next(after){const p=presence(),start=order.indexOf(after);return [1,2,3
 function snapshot(s){s.emit('settings',settings);s.emit('caption',display);}
 function connect(s){
   boxes.connect(s);
-  s.on('deskState', (_, ack) => { if(typeof ack==='function') ack({ok:true,boxes:boxes.list(),settings,raw}); });
+  s.on('deskState', (_, ack) => { if(typeof ack==='function') ack({ok:true,mode,boxes:boxes.list(),settings,raw}); });
   snapshot(s);s.emit('version','v29.5');s.emit('presence',getPresence());s.emit('active',active);
   s.on('joinOutput',()=>{outputs.add(s.id);if(authority()!==displayAuthority)resetClock();else s.emit('caption',display);});
   s.on('captionPresented',({id,visible}={})=>{
@@ -109,6 +126,10 @@ function connect(s){
     if(!displayStartedAt){displayItem.presented=true;io.to(reviewChannel).emit('captionLogged',displayItem);displayStartedAt=Date.now();showQueued();}
   });
   s.on('register',({key,operatorId}={},ack)=>{
+    if(ai){
+      const error='完全AI版の担当はデスクと校閲です。';
+      s.emit('roleError',error);if(typeof ack==='function')ack({ok:false,error});return;
+    }
     if(!order.includes(key))return;
     if(s.id===reviewer)return;
     const sameOperator=typeof operatorId==='string'&&operatorId.length<=80&&roleOwners[key]===operatorId;
@@ -146,7 +167,7 @@ function connect(s){
     const admission=reviewerDraft.join(options);
     if(!admission.ok){if(typeof ack==='function')ack(admission);return;}
     reviewer=s.id;s.join(reviewChannel);if(authority()!==displayAuthority)resetClock();
-    if(typeof ack==='function')ack({...admission,session,raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
+    if(typeof ack==='function')ack({...admission,session,mode,aiBoxes:ai?.list(),raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
   });
   s.on('saveReviewDraft',(draft,ack)=>{
     const result=s.id===reviewer?reviewerDraft.save(draft):{ok:false,error:'校閲者として未接続です'};
@@ -196,8 +217,8 @@ function connect(s){
   });
   s.on('disconnect',()=>{outputs.delete(s.id);if(reviewer===s.id)reviewer=null;if(authority()!==displayAuthority)resetClock();removeSocketFromRole(s);});
 }
-return {connect,clip:boxes.clip,dispose(){boxes.dispose();receipts.clear();if(displayTimer)clearTimeout(displayTimer);waiting.length=0;raw.length=0;history.length=0;requests.clear();}};
+return {connect,clip:boxes.clip,dispose(){ai?.dispose();boxes.dispose();receipts.clear();if(displayTimer)clearTimeout(displayTimer);waiting.length=0;raw.length=0;history.length=0;requests.clear();}};
 }
-require('./rooms')(app,io,createRoomRuntime);
+require('./rooms')(app,io,createRoomRuntime,aiSchedule?aiRoomCode:null);
 const PORT=Number(process.env.PORT??3001);
 server.listen(PORT,'0.0.0.0',()=>console.log('subtitle AI mirror on port '+server.address().port));

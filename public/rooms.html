@@ -3,13 +3,31 @@
 <script src="/mirror-config.js"></script><script src="connection.js?v=29.8"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#15191f;color:#edf1f7;font:16px Meiryo,sans-serif}main{max-width:980px;margin:0 auto;padding:32px 20px}header{display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:25px;margin:0}h2{font-size:20px;margin:0 0 15px}h3{font-size:17px;margin:0 0 10px}small,.muted{color:#a8b3c3}.grid{display:grid;grid-template-columns:1.2fr 1fr;gap:22px;margin-top:22px}.panel{border:1px solid #556273;border-radius:8px;padding:22px;background:#1b222b}button,input{font:inherit;border-radius:4px}button{cursor:pointer;padding:9px 14px;border:1px solid #718198;background:#263447;color:white;text-decoration:none;display:inline-block}button:hover{background:#354d68}button:disabled{opacity:.5;cursor:wait}.primary{background:#236f53;border-color:#38896b}input{width:100%;background:#12171e;color:#fff;border:1px solid #718198;padding:10px;margin-top:6px}label{display:block;margin:14px 0}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.room{border-bottom:1px solid #455163;padding:15px 0}.room:last-child{border:0}.room-name{overflow-wrap:anywhere;flex:1;min-width:100px}.room small{display:block;margin-top:5px}#status{min-height:28px;margin:18px 0 0;color:#ffc179;white-space:pre-wrap}#status.ok{color:#77d9ab}.actions{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}.danger{border-color:#b85858;color:#ffc8c8}.help{font-size:13px;line-height:1.7}.title-wrap{overflow-wrap:anywhere}dialog{width:min(520px,calc(100% - 28px));max-height:90dvh;overflow:auto;border:1px solid #718198;border-radius:8px;background:#1b222b;color:#edf1f7;padding:24px}dialog::backdrop{background:#0009}.dialog-status{color:#ffc179;white-space:pre-wrap}.dialog-status:empty{display:none}[hidden]{display:none!important}@media(max-width:720px){.grid{grid-template-columns:1fr}main{padding:22px 14px}header{align-items:flex-start}h1{font-size:21px}.panel{padding:18px}}
+#new-mode{display:block;width:100%;margin-top:6px;padding:10px;border:1px solid #718198;border-radius:4px;background:#12171e;color:#fff;font:inherit}
 </style></head><body><main>
 <header><div><h1>字幕連係 <small>音声認識版</small></h1><p class="muted">使用するルームを選んでください。</p></div><a href="logs.html" style="color:#72b7ff">保存ログ</a><button id="refresh" type="button">一覧を更新</button></header>
 <p id="status" role="status" aria-live="polite">ルームを読み込み中…</p>
 <div class="grid">
 <section class="panel"><h2>ルーム一覧</h2><div id="room-list"></div></section>
-<section class="panel"><h2>案件ルームを作成</h2><div id="create-form" role="group" aria-label="案件ルームを作成"><label>案件名<input id="new-name" required maxlength="80" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore placeholder="案件名を入力"></label><label>入室パスワード<input id="new-password" type="password" required minlength="4" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></label><p class="help muted">数字4桁。全角数字は半角に変換します。</p><button class="primary" type="button" data-action>ルームを作成</button></div><p class="help muted">ルームの作成に管理者登録は不要です。練習用はパスワードなしで使えます。</p></section>
+<section class="panel">
+  <h2>案件ルームを作成</h2>
+  <div id="create-form" role="group" aria-label="案件ルームを作成">
+    <label>案件名<input id="new-name" required maxlength="80" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore placeholder="案件名を入力"></label>
+    <label>字幕作成方式
+      <select id="new-mode" aria-describedby="new-mode-help">
+        <option value="standard">通常版</option>
+        <option value="complete-ai">完全AI版</option>
+      </select>
+    </label>
+    <p id="new-mode-help" class="help muted" aria-live="polite">入力担当が原稿を送り、校閲から字幕を送出します。</p>
+    <label id="complete-ai-code" hidden>完全AI版の作成コード<input id="new-access-code" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore disabled></label>
+    <label>入室パスワード<input id="new-password" type="password" required minlength="4" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></label>
+    <p class="help muted">数字4桁。全角数字は半角に変換します。</p>
+    <button class="primary" type="button" data-action>ルームを作成</button>
+  </div>
+  <p class="help muted">練習用はパスワードなしで使えます。</p>
+</section>
 </div></main>
 <dialog id="join-dialog" aria-labelledby="join-title"><h2 id="join-title"></h2><p id="join-purpose" class="muted"></p><p id="join-status" class="dialog-status" role="status"></p><div id="join-form" role="group" aria-label="ルームの認証"><label>入室パスワード<input id="join-password" type="password" required minlength="4" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></label><div class="actions"><button class="primary" type="button" data-action>認証して進む</button><button type="button" data-close="join-dialog">キャンセル</button></div></div></dialog>
 <dialog id="manage-dialog" aria-labelledby="manage-title"><div class="row"><h2 id="manage-title"></h2><button type="button" data-close="manage-dialog">閉じる</button></div><p class="help muted">このルームに認証済みの人が操作できます。パスワード変更時は各画面の再入室が必要です。</p><p id="manage-status" class="dialog-status" role="status"></p><div id="password-form" role="group" aria-label="パスワード変更"><label>新しいパスワード<input id="change-password" type="password" required minlength="4" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></label><button type="button" data-action>パスワードを変更</button></div><div class="actions"><button type="button" id="delete-room" class="danger">この案件ルームを削除</button><button type="button" id="forget-room">このブラウザの入室情報を解除</button></div></dialog>
-<script src="rooms-ui.js?v=29.8-pin4"></script></body></html>
+<script src="rooms-ui.js?v=complete-ai"></script></body></html>

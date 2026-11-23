@@ -176,6 +176,10 @@ details { position: relative; }
 }
 .row span { white-space: pre-wrap; }
 .row small { color: #4a605d; }
+.ai-distribution .row { grid-template-columns: auto minmax(0,1fr) minmax(5em,auto); }
+.ai-distribution .row small { max-width: 13em; }
+.ai-distribution .row small span { display: block; overflow-wrap: anywhere; }
+.ai-distribution .row small button, #delivery button { min-height: 26px; padding: 1px 5px; margin: 3px 4px 0 0; }
 footer { flex: none; padding: 0 16px 6px; }
 @media (min-width: 800px) and (max-width: 1120px) {
   .desk-workspace { grid-template-columns: minmax(664px, 3fr) minmax(0, 2fr); }

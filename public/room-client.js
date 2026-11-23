@@ -1,6 +1,7 @@
 'use strict';
 const deskSocket = SubtitleConnection.connect();
 let deskListener, currentDeskState, deskOnline = false;
+let deskMode = 'standard';
 let haveSnapshot = false, deskRetry, resolveRoomReady;
 let deskConnection = {type:'waiting',message:'デスクに接続中…'};
 const roomReady = new Promise(resolve => {resolveRoomReady=resolve;});
@@ -36,6 +37,7 @@ function loadDeskState(socketId) {
       return;
     }
     currentDeskState=snapshot;
+    deskMode=snapshot.mode || 'standard';
     haveSnapshot=true;
     deskListener?.({type:'snapshot',state:snapshot});
     joinDesk(socketId);
@@ -49,6 +51,7 @@ function joinDesk(socketId) {
       retryDesk(joinDesk,socketId,message);
       return;
     }
+    deskMode=result.mode || deskMode;
     setDeskConnection('ready');
     resolveRoomReady();
     for(const ready of deskWaiters.splice(0))ready();
@@ -71,7 +74,12 @@ async function roomUpload(meta, blob) {
   await roomReady;
   if (!deskOnline) await new Promise(resolve=>deskWaiters.push(resolve));
   const result=await deskSocket.timeout(30000).emitWithAck('publishBox',{...meta,clip:blob?await blob.arrayBuffer():null});
-  if (!result.ok) throw Error(result.error);
+  if (!result.ok) throw Object.assign(Error(result.error), {retryable:result.retryable});
+}
+async function failedBoxAction(action,id) {
+  if (!deskOnline) throw Error('デスクの再接続を待ってください。');
+  const result=await deskSocket.timeout(8000).emitWithAck(action,{id});
+  if (!result?.ok) throw Error(result?.error || '操作を完了できませんでした。');
 }
 function roomLink(role) {
   const page={desk:'desk.html',A:'index.html',B:'index.html',reviewer:'reviewer.html'}[role];

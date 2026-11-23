@@ -8,6 +8,8 @@
   const page=location.pathname.split('/').pop()||'index.html';
   const prefix='subtitle-ai-mirror:'+url+':'+roomId+':';
   const tokenKey=id=>'subtitle-ai-mirror:'+url+':'+id+':token';
+  let resolveRoom;
+  const roomReady=new Promise(resolve=>{resolveRoom=resolve;});
   function token(id=roomId){try{return localStorage.getItem(tokenKey(id))||'';}catch(_){return '';}}
   function remember(id,value){try{if(value)localStorage.setItem(tokenKey(id),value);else localStorage.removeItem(tokenKey(id));}catch(_){throw new Error('入室情報を保存できません。ブラウザのサイトデータ保存を許可してください。');}}
   function lobby(reason){const u=new URL('rooms.html',location.href);if(roomId)u.searchParams.set('room',roomId);if(pages.includes(page))u.searchParams.set('next',page);if(['A','B','C'].includes(params.get('role')))u.searchParams.set('role',params.get('role'));if(reason)u.searchParams.set('reason',reason);return u.href;}
@@ -26,6 +28,7 @@
       document.getElementById('room-auth-cover')?.remove();
       document.title=info.name+' | '+document.title.replace(/^.* \| /,'');
       document.querySelectorAll('a[href]').forEach(a=>{const target=new URL(a.getAttribute('href'),location.href);if(target.origin===location.origin&&pages.includes(target.pathname.split('/').pop())){target.searchParams.set('room',roomId);a.href=target.href;}});
+      resolveRoom(info);
       // The output page must remain a clean caption-only surface after authentication.
       if(page==='output.html'||document.getElementById('room-nav'))return;
       const nav=document.createElement('div');nav.id='room-nav';nav.style.cssText='display:flex;gap:14px;align-items:center;flex-wrap:wrap;font:14px Meiryo,sans-serif;padding:5px 0;flex-shrink:0';
@@ -54,5 +57,5 @@
       }}
     };check();
   }
-  window.SubtitleConnection=Object.freeze({version:'v29.8',url,roomId,storageKey:key=>prefix+key,connect,api,token,remember});
+  window.SubtitleConnection=Object.freeze({version:'v29.8',url,roomId,roomReady,storageKey:key=>prefix+key,connect,api,token,remember});
 })();
