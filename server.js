@@ -22,6 +22,7 @@ const channel='room:'+roomId,reviewChannel=channel+':reviewers';
 const broadcast=()=>io.to(channel);
 const ai=mode==='complete-ai'?createAiBoxReview({
   schedule:aiSchedule,
+  timeoutMs:Number(process.env.GEMINI_REVIEW_TIMEOUT_MS),
   clip:(id,version)=>boxes.clip(id,version),
   notify:card=>{boxes.refresh(card.id);io.to(reviewChannel).emit('aiReviewBox',card);},
   deliver:(boxId,text)=>{

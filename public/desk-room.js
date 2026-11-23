@@ -92,25 +92,22 @@ function showDeskBox(box){
     state.textContent=box.sent?'送信済み':box.owner?box.owner+' 取得中':'未取得';
     return;
   }
-  const labels={'awaiting-audio':'音声待ち',queued:'AI校閲待ち',processing:'AI校閲中',ready:'AI校閲済み',failed:'AI校閲失敗',skipped:'スキップ済み'};
+  const labels={'awaiting-audio':'音声待ち',queued:'AI校閲待ち',processing:'AI校閲中',ready:'AI校閲済み',failed:'AI校閲失敗・後続の字幕は続行',skipped:'スキップ済み'};
   state.textContent=labels[box.aiStatus] || '送信済み';
+  if(box.aiStatus==='ready' && box.outOfSequence && !box.delivered)state.textContent='再試行で校正済み・校閲のボックス欄で確認';
   if(box.aiStatus==='failed'){
     const reason=document.createElement('span');
     reason.textContent=box.aiError || 'AI校閲を完了できませんでした。';
     state.append(reason);
-    for(const [action,label] of [['retryAiBox','再試行'],['skipAiBox','後続へ進む']]){
-      const button=document.createElement('button');
-      button.type='button';button.textContent=label;
-      button.onclick=async()=>{
-        if(action==='skipAiBox' && !confirm('#'+box.id+' を校閲の編集欄に送らず、後続の原稿へ進みますか？ このボックスの原文と録音は残ります。'))return;
-        const buttons=state.querySelectorAll('button');
-        for(const item of buttons)item.disabled=true;
-        try{await failedBoxAction(action,box.id);}
-        catch(error){reason.textContent='受付を確認できません。'+error.message;}
-        finally{for(const item of buttons)item.disabled=false;}
-      };
-      state.append(button);
-    }
+    const button=document.createElement('button');
+    button.type='button';button.textContent='再試行';
+    button.onclick=async()=>{
+      button.disabled=true;
+      try{await failedBoxAction('retryAiBox',box.id);}
+      catch(error){reason.textContent='受付を確認できません。'+error.message;}
+      finally{button.disabled=false;}
+    };
+    state.append(button);
   }
 }
 function applyDeskState(change){

@@ -8,6 +8,7 @@ const {mkdtemp, readFile, rm, writeFile} = require('node:fs/promises');
 const {tmpdir} = require('node:os');
 const path = require('node:path');
 const {createHash} = require('node:crypto');
+const {setTimeout:delay} = require('node:timers/promises');
 const {io} = require('socket.io-client');
 
 const root = path.join(__dirname, '..');
@@ -28,6 +29,11 @@ function createGeminiReview() {
     appendFileSync(process.env.TEST_GEMINI_CALLS, JSON.stringify({text,digest})+'\\n');
     const attempt = (attempts.get(text)||0)+1;
     attempts.set(text,attempt);
+    if (text.startsWith('停止する原文') && attempt===1) return new Promise(()=>{});
+    if (text==='順番待ちした原文') {
+      await setTimeout(650);
+      return '校正：'+text;
+    }
     await setTimeout(text==='最初の誤認識' ? 150 : 5, undefined, {signal});
     if (text==='処理できない原文' || (text==='再試行できる原文' && attempt===1))
       throw new Error('A private upstream fixture error');
@@ -49,7 +55,7 @@ async function startServer(t, settings = {}) {
   await Promise.all([writeFile(fixture, mockGemini), writeFile(calls, '')]);
   const processEnv = {
     ...process.env, PORT:'0', ROOM_STORE_PATH:path.join(directory,'rooms.json'),
-    GEMINI_API_KEY:'', COMPLETE_AI_ACCESS_CODE:'', TEST_GEMINI_CALLS:calls,
+    GEMINI_API_KEY:'', COMPLETE_AI_ACCESS_CODE:'', GEMINI_REVIEW_TIMEOUT_MS:'', TEST_GEMINI_CALLS:calls,
     ...settings,
   };
   const child = spawn(process.execPath, ['--require', fixture, 'server.js'], {cwd:root, env:processEnv});
@@ -182,6 +188,7 @@ test('手動で送った原文のAI校閲と対応音声を、同じ案件ルー
     assert.equal(box.id,forwarded[index].boxId);
     assert.equal(box.aiStatus,'ready');
     assert.equal(box.audio,true);
+    assert.equal('original' in box,false);
     assert.ok(readyBoxes.some(event=>event.id===box.id));
     const clip = app.url+'/ai/api/rooms/'+complete.room.id+'/clips/'+box.id+'?version='+box.version;
     assert.equal((await fetch(clip,{headers:authorization(standard.token)})).status,403);
@@ -212,7 +219,7 @@ test('手動で送った原文のAI校閲と対応音声を、同じ案件ルー
   assert.deepEqual((await app.geminiCalls()).sort(byText),saved);
 });
 
-test('校閲失敗時は原音を保持し、デスクのスキップまたは再試行で処理を進める', {timeout:10000}, async t => {
+test('校閲失敗時は原文と原音を保持し、後続の校正を自動で編集欄へ進める', {timeout:10000}, async t => {
   const app = await startServer(t,{GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode});
   const complete = await app.room('失敗時の完全AI案件',{mode:'complete-ai',code:accessCode});
   assert.equal(complete.status,201);
@@ -223,25 +230,23 @@ test('校閲失敗時は原音を保持し、デスクのスキップまたは�
   const makeBox = (id,text,clip=firstAudio) => ({key:'failures/'+id,version:1,text,clip,forReview:true});
 
   const failedFirst = waitForBox(editor,card=>card.id===1 && card.aiStatus==='failed');
-  const waitingSecond = waitForBox(editor,card=>card.id===2 && card.aiStatus==='ready');
+  const releasedSecond = once(editor,'reviewItem',{signal:AbortSignal.timeout(2000)});
   assert.equal((await call(desk,'publishBox',makeBox(1,'処理できない原文'))).ok,true);
   assert.equal((await call(desk,'publishBox',makeBox(2,'後続の原文'))).ok,true);
-  const [failure,waiting] = await Promise.all([failedFirst,waitingSecond]);
+  const [failure,[second]] = await Promise.all([failedFirst,releasedSecond]);
+  assert.equal(second.boxId,2);
+  assert.equal(second.text,'校正：後続の原文');
   assert.equal(failure.text,'');
+  assert.equal(failure.original,'処理できない原文');
   assert.equal(failure.audio,true);
   assert.match(failure.aiError,/Gemini/);
   assert.doesNotMatch(failure.aiError,/private upstream/);
-  assert.equal(waiting.delivered,false);
-  assert.deepEqual((await call(editor,'joinReviewer',reviewer)).raw,[]);
-  assert.equal((await call(editor,'skipAiBox',{id:1})).ok,false);
   assert.equal((await call(editor,'retryAiBox',{id:1})).ok,false);
 
-  const release = once(editor,'reviewItem',{signal:AbortSignal.timeout(2000)});
-  assert.equal((await call(desk,'skipAiBox',{id:1})).ok,true);
-  assert.equal((await release)[0].text,'校正：後続の原文');
-  const postSkip = await call(editor,'joinReviewer',reviewer);
-  assert.equal(postSkip.aiBoxes[0].aiStatus,'skipped');
-  assert.equal(postSkip.aiBoxes[0].audio,true);
+  const afterFailure = await call(editor,'joinReviewer',reviewer);
+  assert.equal(afterFailure.aiBoxes[0].aiStatus,'failed');
+  assert.equal(afterFailure.aiBoxes[0].audio,true);
+  assert.deepEqual(afterFailure.raw.map(item=>item.text),['校正：後続の原文']);
   const clip = await fetch(app.url+'/ai/api/rooms/'+complete.room.id+'/clips/1?version=1',
     {headers:authorization(complete.token)});
   assert.equal(clip.status,200);
@@ -250,11 +255,64 @@ test('校閲失敗時は原音を保持し、デスクのスキップまたは�
   const failedThird = waitForBox(editor,card=>card.id===3 && card.aiStatus==='failed');
   assert.equal((await call(desk,'publishBox',makeBox(3,'再試行できる原文',wave(175)))).ok,true);
   await failedThird;
-  const revised = once(editor,'reviewItem',{signal:AbortSignal.timeout(2000)});
+  const revised = waitForBox(editor,card=>card.id===3 && card.aiStatus==='ready');
   assert.equal((await call(desk,'retryAiBox',{id:3})).ok,true);
-  assert.equal((await revised)[0].text,'校正：再試行できる原文');
+  const recovered = await revised;
+  assert.equal(recovered.text,'校正：再試行できる原文');
+  assert.equal(recovered.original,'再試行できる原文');
+  assert.equal(recovered.outOfSequence,true);
+  assert.equal(recovered.delivered,false);
   const final = await call(editor,'joinReviewer',reviewer);
-  assert.equal(final.aiBoxes[2].aiStatus,'ready');
-  assert.deepEqual(final.raw.map(item=>item.text),['校正：後続の原文','校正：再試行できる原文']);
+  assert.deepEqual(final.raw.map(item=>item.text),['校正：後続の原文']);
+  assert.equal(final.reviewDraft.text,'校正：後続の原文');
   assert.deepEqual(final.display.lines,[]);
+});
+
+test('応答が止まっても時間切れで枠を解放し、待ち時間を含む期限で後続を進める', {timeout:10000}, async t => {
+  const app = await startServer(t,{
+    GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode,GEMINI_REVIEW_TIMEOUT_MS:'800',
+  });
+  const complete = await app.room('時間切れの完全AI案件',{mode:'complete-ai',code:accessCode});
+  assert.equal(complete.status,201);
+  const [desk, editor] = await Promise.all([app.connect(complete),app.connect(complete)]);
+  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  assert.equal((await call(editor,'joinReviewer',reviewer)).ok,true);
+  const firstAudio = wave(410);
+  const submit = (id,text,clip=firstAudio) => call(desk,'publishBox',{
+    key:'deadlines/'+id,version:1,text,clip,forReview:true,
+  });
+  const active = [1,2,3].map(id=>waitForBox(editor,card=>card.id===id && card.aiStatus==='processing'));
+  const firstTimedOut = waitForBox(editor,card=>card.id===1 && card.aiStatus==='failed');
+  for (const id of [1,2,3]) assert.equal((await submit(id,'停止する原文'+id)).ok,true);
+  await Promise.all(active);
+  // The fourth provider call is faster than the full deadline, but slower
+  // than its remaining budget after waiting behind the three stalled calls.
+  await delay(200);
+  const queued = waitForBox(editor,card=>card.id===4 && card.aiStatus==='queued');
+  const queuedTimedOut = waitForBox(editor,card=>card.id===4 && card.aiStatus==='failed');
+  const delivered = once(editor,'reviewItem',{signal:AbortSignal.timeout(4000)});
+  assert.equal((await submit(4,'順番待ちした原文',wave(510))).ok,true);
+  await queued;
+  assert.equal((await submit(5,'すぐ校正できる原文',wave(610))).ok,true);
+  assert.deepEqual((await app.geminiCalls()).map(item=>item.text),
+    ['停止する原文1','停止する原文2','停止する原文3']);
+  assert.deepEqual((await call(editor,'joinReviewer',reviewer)).raw,[]);
+
+  const [stalled,waiting,[next]] = await Promise.all([firstTimedOut,queuedTimedOut,delivered]);
+  assert.equal(stalled.original,'停止する原文1');
+  assert.equal(stalled.audio,true);
+  assert.match(stalled.aiError,/時間/);
+  assert.equal(waiting.original,'順番待ちした原文');
+  assert.equal(next.boxId,5);
+  assert.equal(next.text,'校正：すぐ校正できる原文');
+  const final = await call(editor,'joinReviewer',reviewer);
+  assert.deepEqual(final.aiBoxes.map(card=>card.aiStatus),['failed','failed','failed','failed','ready']);
+  assert.deepEqual(final.raw.map(item=>item.text),[next.text]);
+  assert.equal(final.reviewDraft.text,next.text);
+  assert.deepEqual(final.display.lines,[]);
+  assert.deepEqual(final.waiting,[]);
+  const clip = await fetch(app.url+'/ai/api/rooms/'+complete.room.id+'/clips/1?version=1',
+    {headers:authorization(complete.token)});
+  assert.equal(clip.status,200);
+  assert.deepEqual(Buffer.from(await clip.arrayBuffer()),firstAudio);
 });

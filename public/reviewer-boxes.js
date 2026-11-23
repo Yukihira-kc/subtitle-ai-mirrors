@@ -12,7 +12,7 @@ window.ReviewerBoxes = {
     const cards = new Map();
     const labels = {
       'awaiting-audio':'音声待ち', queued:'校正待ち', processing:'校正中',
-      ready:'校正済み', failed:'校正失敗', skipped:'デスクがスキップ',
+      ready:'校正済み', failed:'校正失敗・後続の字幕は続行', skipped:'デスクがスキップ',
     };
     let enabled = false;
     let context, active = null;
@@ -91,8 +91,18 @@ window.ReviewerBoxes = {
       const feedback = document.createElement('p');
       feedback.className = 'ai-review-note';
       feedback.setAttribute('role','status');
-      row.append(top,text,note,feedback);
-      const card = {row,state,play,text,note,feedback};
+      const details = document.createElement('details');
+      details.className = 'ai-review-original';
+      const summary = document.createElement('summary');
+      summary.textContent = '認識原文を確認';
+      const original = document.createElement('p');
+      original.className = 'ai-review-text';
+      details.append(summary,original);
+      row.append(top,text,note,details,feedback);
+      const card = {row,state,play,text,note,details,original,feedback};
+      details.addEventListener('toggle',() => {
+        original.textContent = details.open ? card.box.original || '' : '';
+      });
       // Keep F12 available when a reviewer clicks replay while editing.
       play.addEventListener('mousedown',event => {
         if (event.button===0 && document.activeElement===editor) event.preventDefault();
@@ -114,9 +124,15 @@ window.ReviewerBoxes = {
         list.insertBefore(card.row,next||null);
       }
       if (active?.card===card && (card.box.version!==box.version || !box.audio)) stopAudio();
+      const recovered = box.aiStatus === 'ready' && box.outOfSequence === true && box.delivered === false;
+      const hasOriginal = (box.aiStatus === 'failed' || recovered) && typeof box.original === 'string' && box.original.length > 0;
+      if (!hasOriginal || card.box?.version !== box.version) card.details.open = false;
+      card.details.hidden = !hasOriginal;
+      card.original.textContent = card.details.open && hasOriginal ? box.original : '';
       card.box = box;
-      card.state.textContent = box.aiStatus==='ready' && box.delivered===false
-        ? '校正済み・先行する箱の処理待ち' : labels[box.aiStatus] || '';
+      card.state.textContent = labels[box.aiStatus] || '';
+      if (recovered) card.state.textContent = '再試行で校正済み・この欄のみ';
+      else if (box.aiStatus === 'ready' && box.delivered === false) card.state.textContent = '校正済み・先行する箱の処理待ち';
       card.text.textContent = box.aiStatus === 'ready' ? box.text || '' : '';
       const notes = [];
       if (box.aiStatus === 'failed') notes.push(box.aiError || '校正結果を取得できませんでした。');

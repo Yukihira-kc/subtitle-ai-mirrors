@@ -77,13 +77,11 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
         reply({ok:true});
       });
       if(ai){
-        for(const [event,action] of [['retryAiBox',ai.retry],['skipAiBox',ai.skip]]){
-          socket.on(event,(data,reply)=>{
-            if(typeof reply!=='function')return;
-            if(desk!==socket.id)return reply({ok:false,error:'デスクの接続を確認してください'});
-            reply(action(data?.id));
-          });
-        }
+        socket.on('retryAiBox',(data,reply)=>{
+          if(typeof reply!=='function')return;
+          if(desk!==socket.id)return reply({ok:false,error:'デスクの接続を確認してください'});
+          reply(ai.retry(data?.id));
+        });
       }
       socket.on('claim', (data, reply) => {
         if (typeof reply !== 'function') return;
