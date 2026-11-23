@@ -76,11 +76,6 @@ async function roomUpload(meta, blob) {
   const result=await deskSocket.timeout(30000).emitWithAck('publishBox',{...meta,clip:blob?await blob.arrayBuffer():null});
   if (!result.ok) throw Object.assign(Error(result.error), {retryable:result.retryable});
 }
-async function failedBoxAction(action,id) {
-  if (!deskOnline) throw Error('デスクの再接続を待ってください。');
-  const result=await deskSocket.timeout(8000).emitWithAck(action,{id});
-  if (!result?.ok) throw Error(result?.error || '操作を完了できませんでした。');
-}
 function roomLink(role) {
   const page={desk:'desk.html',A:'index.html',B:'index.html',reviewer:'reviewer.html'}[role];
   const u=new URL(page,location.href);

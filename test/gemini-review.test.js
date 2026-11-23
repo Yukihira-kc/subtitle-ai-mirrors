@@ -52,10 +52,12 @@ test('Gemini receives one streamed review with the exact system instruction, sou
   assert.equal(request.config.abortSignal, signal);
   assert.equal(request.config.responseMimeType, 'text/plain');
   assert.equal(request.config.maxOutputTokens, 2048);
+  assert.equal(request.config.automaticContinuation, false);
+  assert.equal(request.config.httpOptions.retryOptions.attempts, 1);
 });
 
 test('48 kHz and 44.1 kHz desk recordings are normalized to 16 kHz mono without changing the stored clip', async () => {
-  const { review, requests } = fixture([{ text: '字幕' }]);
+  const { review, requests } = fixture([{ text: '字幕', candidates: [{finishReason:'STOP'}] }]);
   for (const [rate, samples, expected] of [
     [48000, [100, -100, 300, 900, 600, -300], [100, 400]],
     [44100, Array(441).fill(-432), Array(160).fill(-432)],
@@ -90,5 +92,6 @@ test('Gemini output that is empty, blocked, stopped early or too long is never r
   await assert.rejects(fixture([
     { text: '途中の' }, { text: '校正', candidates: [{ finishReason: 'MAX_TOKENS' }] },
   ]).review(request), /完了/);
+  await assert.rejects(fixture([{ text: '途中で切れた字幕' }]).review(request), /完了/);
   await assert.rejects(fixture([{ text: 'あ'.repeat(16001) }]).review(request), /長すぎ/);
 });

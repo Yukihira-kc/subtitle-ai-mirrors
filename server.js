@@ -18,21 +18,21 @@ const aiSchedule=geminiKey&&aiRoomCode?.length>=16
   : null;
 const io=new Server(server,{path:'/ai/socket.io',maxHttpBufferSize:9*1024*1024,cors:{origin:'*'}});
 function createRoomRuntime(roomId,mode){
-const channel='room:'+roomId,reviewChannel=channel+':reviewers';
+const channel='room:'+roomId,reviewChannel=channel+':reviewers',deskChannel=channel+':desk';
 const broadcast=()=>io.to(channel);
 const ai=mode==='complete-ai'?createAiBoxReview({
   schedule:aiSchedule,
   timeoutMs:Number(process.env.GEMINI_REVIEW_TIMEOUT_MS),
   clip:(id,version)=>boxes.clip(id,version),
   notify:card=>{boxes.refresh(card.id);io.to(reviewChannel).emit('aiReviewBox',card);},
-  deliver:(boxId,text)=>{
+  appendToDraft:(boxId,text)=>{
     const item={id:++seq,key:'Gemini',boxId,text,at:Date.now()};
     reviewerDraft.append(item);
     io.to(reviewChannel).emit('reviewItem',item);
   },
   retainReplay:id=>boxes.retainReplay(id),
 }):null;
-const boxes = require('./boxes')(broadcast,{mode,ai});
+const boxes = require('./boxes')(ai ? ()=>io.to(deskChannel) : broadcast,{mode,ai});
 const receipts = new Map();
 let columnsInitialized=false;
 const order=['A','B','C'], inputs={A:'',B:'',C:''};
@@ -118,7 +118,12 @@ function next(after){const p=presence(),start=order.indexOf(after);return [1,2,3
 function snapshot(s){s.emit('settings',settings);s.emit('caption',display);}
 function connect(s){
   boxes.connect(s);
-  s.on('deskState', (_, ack) => { if(typeof ack==='function') ack({ok:true,mode,boxes:boxes.list(),settings,raw}); });
+  s.on('deskState', (_, ack) => {
+    if(typeof ack!=='function')return;
+    if(ai && s.id===reviewer)return ack({ok:false,error:'校閲担当として接続中です。'});
+    if(ai)s.join(deskChannel);
+    ack({ok:true,mode,boxes:boxes.list(),settings,raw});
+  });
   snapshot(s);s.emit('version','v29.5');s.emit('presence',getPresence());s.emit('active',active);
   s.on('joinOutput',()=>{outputs.add(s.id);if(authority()!==displayAuthority)resetClock();else s.emit('caption',display);});
   s.on('captionPresented',({id,visible}={})=>{
@@ -167,8 +172,15 @@ function connect(s){
     if(reviewer&&reviewer!==s.id){if(typeof ack==='function')ack({ok:false,code:'reviewer_busy',error:'校閲者は既に接続中です'});return;}
     const admission=reviewerDraft.join(options);
     if(!admission.ok){if(typeof ack==='function')ack(admission);return;}
+    if(ai)s.leave(deskChannel);
     reviewer=s.id;s.join(reviewChannel);if(authority()!==displayAuthority)resetClock();
-    if(typeof ack==='function')ack({...admission,session,mode,aiBoxes:ai?.list(),raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
+    if(typeof ack==='function')ack({...admission,session,mode,aiBoxes:ai?.list(),aiAcquiredId:ai?.acquiredId,raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
+  });
+  s.on('takeAiReviewBox',(data,ack)=>{
+    if(typeof ack!=='function')return;
+    if(!ai || s.id!==reviewer || data?.session!==session)
+      return ack({ok:false,error:'校閲画面の接続を確認してください。'});
+    ack(ai.take(data.id));
   });
   s.on('saveReviewDraft',(draft,ack)=>{
     const result=s.id===reviewer?reviewerDraft.save(draft):{ok:false,error:'校閲者として未接続です'};

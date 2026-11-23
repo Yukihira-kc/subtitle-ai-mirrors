@@ -64,7 +64,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
         const additional = (clip?.length || 0) - (box?.clip?.length || 0);
         while (bytesInUse + additional > totalLimit && replayClips.size) replayClips.values().next().value();
         if (bytesInUse + additional > totalLimit)
-          return reply({ok:false,error:ai?'共有音声に空きがありません。AI校閲の進行を確認してください。':'共有音声の空き待ちです。取得済みの原稿を送信してください'});
+          return reply({ok:false,error:ai?'共有音声に空きがありません。校閲で次の箱を取得すると、以前の箱の音声を解放できます。':'共有音声の空き待ちです。取得済みの原稿を送信してください'});
         if (!box) {
           box = {id:byId.size+1, owner:null, sent:false};
           byId.set(box.id, box); byKey.set(key, box);
@@ -76,13 +76,6 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
         else update(box);
         reply({ok:true});
       });
-      if(ai){
-        socket.on('retryAiBox',(data,reply)=>{
-          if(typeof reply!=='function')return;
-          if(desk!==socket.id)return reply({ok:false,error:'デスクの接続を確認してください'});
-          reply(ai.retry(data?.id));
-        });
-      }
       socket.on('claim', (data, reply) => {
         if (typeof reply !== 'function') return;
         const box = byId.get(data?.id), role = socket.data.role;

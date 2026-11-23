@@ -92,22 +92,18 @@ function showDeskBox(box){
     state.textContent=box.sent?'送信済み':box.owner?box.owner+' 取得中':'未取得';
     return;
   }
-  const labels={'awaiting-audio':'音声待ち',queued:'AI校閲待ち',processing:'AI校閲中',ready:'AI校閲済み',failed:'AI校閲失敗・後続の字幕は続行',skipped:'スキップ済み'};
-  state.textContent=labels[box.aiStatus] || '送信済み';
-  if(box.aiStatus==='ready' && box.outOfSequence && !box.delivered)state.textContent='再試行で校正済み・校閲のボックス欄で確認';
-  if(box.aiStatus==='failed'){
-    const reason=document.createElement('span');
-    reason.textContent=box.aiError || 'AI校閲を完了できませんでした。';
-    state.append(reason);
-    const button=document.createElement('button');
-    button.type='button';button.textContent='再試行';
-    button.onclick=async()=>{
-      button.disabled=true;
-      try{await failedBoxAction('retryAiBox',box.id);}
-      catch(error){reason.textContent='受付を確認できません。'+error.message;}
-      finally{button.disabled=false;}
-    };
-    state.append(button);
+  if(box.aiStatus==='ready' || box.aiStatus==='audio-only'){
+    const result=box.aiStatus==='ready'?'校正済み':'音声のみ';
+    const receipt=box.acquired?'校閲で取得済み':box.delivered?'校閲で取得可':'先行の箱を待機中';
+    state.textContent=result+'・'+receipt;
+  }else if(box.aiStatus==='retrying'){
+    state.textContent='同じ録音でAIが再試行中（2回目）';
+  }else if(box.aiStatus==='processing' || box.aiStatus==='queued'){
+    const second=box.attempt===2;
+    if(box.aiStatus==='processing')state.textContent=second?'AIが再試行中（2回目）':'AI校閲中（1回目）';
+    else state.textContent=second?'自動再試行待ち（2回目）':'AI校閲待ち';
+  }else{
+    state.textContent='送信済み';
   }
 }
 function applyDeskState(change){

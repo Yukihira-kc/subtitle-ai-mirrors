@@ -74,6 +74,9 @@ function createGeminiReview(apiKey, { client } = {}) {
       }],
       config: {
         systemInstruction,
+        // The room queue owns the two attempts and retries the whole WAV.
+        automaticContinuation: false,
+        httpOptions: { retryOptions: { attempts: 1 } },
         responseMimeType: 'text/plain',
         thinkingConfig: { thinkingLevel: 'MINIMAL' },
         maxOutputTokens: 2048,
@@ -81,6 +84,7 @@ function createGeminiReview(apiKey, { client } = {}) {
       },
     });
     let corrected = '';
+    let completed = false;
     for await (const chunk of stream) {
       signal?.throwIfAborted();
       const block = chunk.promptFeedback?.blockReason;
@@ -89,12 +93,14 @@ function createGeminiReview(apiKey, { client } = {}) {
           (finish && finish !== 'STOP' && finish !== 'FINISH_REASON_UNSPECIFIED')) {
         throw new Error('Geminiの校閲が正常に完了しませんでした。');
       }
+      if (finish === 'STOP') completed = true;
       const part = chunk.text;
       if (typeof part === 'string') corrected += part;
       if (corrected.length > maxTextLength) throw new RangeError('Geminiの校閲結果が長すぎます。');
     }
     signal?.throwIfAborted();
     if (!corrected.trim()) throw new Error('Geminiの校閲結果が空です。');
+    if (!completed) throw new Error('Geminiの校閲が正常に完了しませんでした。');
     return corrected.trim();
   };
 }

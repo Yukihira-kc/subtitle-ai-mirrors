@@ -32,99 +32,89 @@ async function reviewUntilAbort(review, request) {
   }
 }
 
-function createAiBoxReview({schedule, clip, notify, deliver, retainReplay, timeoutMs=defaultDeadlineMs}) {
+function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay, timeoutMs=defaultDeadlineMs}) {
   const entries = new Map();
   const lifetime = new AbortController();
   const deadlineMs = Number.isSafeInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 60_000
     ? timeoutMs : defaultDeadlineMs;
-  let next = 1;
+  let nextToRelease = 1;
+  let acquiredId = 0;
+
+  function status(entry) {
+    return {aiStatus:entry.state, aiError:entry.error, attempt:entry.attempt,
+      delivered:entry.delivered, acquired:entry.id <= acquiredId};
+  }
 
   function card(entry) {
-    const {id, version, approx, state, corrected, error, delivered, outOfSequence, original} = entry;
-    return {id, version, approx, text:corrected, audio:!!clip(id,version), aiStatus:state, aiError:error,
-      delivered, outOfSequence, ...(outOfSequence && {original})};
+    const {id, version, approx, delivered, corrected} = entry;
+    return {id, version, approx, text:delivered ? corrected : '', audio:!!clip(id,version), ...status(entry)};
   }
+
   function update(entry) { notify(card(entry)); }
 
-  // Successful first attempts enter the draft in desk order. A failure is a
-  // completed decision, and a manual retry never takes its queue position back.
-  function advance() {
+  function releaseInOrder(completed) {
+    if (completed.id !== nextToRelease) update(completed);
     let entry;
-    while ((entry = entries.get(next)) && (entry.state === 'ready' || entry.outOfSequence)) {
-      next++;
-      if (!entry.outOfSequence) {
-        deliver(entry.id,entry.corrected);
-        entry.delivered = true;
-        update(entry);
-      }
-      retainReplay(entry.id);
+    while ((entry = entries.get(nextToRelease)) && (entry.state === 'ready' || entry.state === 'audio-only')) {
+      nextToRelease++;
+      entry.delivered = true;
+      update(entry);
     }
   }
 
-  function fail(entry, error) {
-    entry.state = 'failed';
-    entry.error = error;
-    entry.outOfSequence = true;
-    update(entry);
-    advance();
-  }
-
-  function enqueue(entry) {
-    // Count the queue wait as part of a box's deadline. Even an SDK that does
-    // not promptly stop after abort must not hold later boxes or a worker slot.
-    const deadline = AbortSignal.timeout(deadlineMs);
-    const signal = AbortSignal.any([lifetime.signal,deadline]);
-    const expire = () => {
-      if (!lifetime.signal.aborted) fail(entry,'Geminiの応答が時間内に届きませんでした。');
-    };
-    deadline.addEventListener('abort',expire,{once:true});
-    entry.state = 'queued';
-    entry.error = '';
-    update(entry);
-    schedule(async review => {
+  async function run(entry, review) {
+    if (lifetime.signal.aborted) return;
+    const audio = clip(entry.id,entry.version);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      entry.attempt = attempt;
+      entry.state = attempt === 1 ? 'processing' : 'retrying';
+      update(entry);
+      const deadline = AbortSignal.timeout(attempt === 1 ? deadlineMs : Math.min(60_000,deadlineMs * 2));
+      const signal = AbortSignal.any([lifetime.signal,deadline]);
       try {
-        if (signal.aborted) return;
-        entry.state = 'processing';
-        update(entry);
-        const corrected = await reviewUntilAbort(review,{audio:clip(entry.id,entry.version),text:entry.original,signal});
+        const corrected = await reviewUntilAbort(review,{audio,text:entry.original,signal});
         signal.throwIfAborted();
         if (typeof corrected !== 'string' || !corrected.trim()) throw new Error('Empty Gemini result');
         entry.corrected = corrected.trim();
         entry.state = 'ready';
-        if (entry.outOfSequence || entry.id !== next) update(entry);
-        advance();
+        entry.error = '';
+        break;
       } catch (error) {
-        if (signal.aborted) return;
-        fail(entry,error?.status === 429
-          ? 'Geminiの利用上限に達したか、混み合っています。'
-          : 'Geminiで聞き直しができませんでした。');
-      } finally {
-        deadline.removeEventListener('abort',expire);
+        if (lifetime.signal.aborted) return;
+        entry.error = deadline.aborted ? 'Geminiの応答が時間内に届きませんでした。'
+          : error?.status === 429 ? 'Geminiの利用上限に達したか、混み合っています。'
+          : 'Geminiで聞き直しができませんでした。';
+        if (attempt === 2) entry.state = 'audio-only';
       }
-    });
+    }
+    releaseInOrder(entry);
   }
 
   return {
     available:!!schedule,
+    get acquiredId() { return acquiredId; },
     accept({id,version,approx,text}) {
-      const entry = {id,version,approx,original:text,corrected:'',error:'',delivered:false,outOfSequence:false};
+      const entry = {id,version,approx,original:text,corrected:'',error:'',state:'queued',attempt:0,delivered:false};
       entries.set(id,entry);
-      enqueue(entry);
+      update(entry);
+      schedule(review => run(entry,review));
     },
     list() { return [...entries.values()].map(card); },
-    status(id) {
+    status(id) { const entry = entries.get(id); return entry && status(entry); },
+    refresh(id) { const entry = entries.get(id); if (entry) update(entry); },
+    take(id) {
       const entry = entries.get(id);
-      return entry && {aiStatus:entry.state,aiError:entry.error,outOfSequence:entry.outOfSequence};
+      if (!entry?.delivered || (id !== acquiredId && id !== acquiredId + 1))
+        return {ok:false,error:'デスクが送った順に、次の箱を取得してください。'};
+      if (id !== acquiredId) {
+        if (entry.state === 'ready') appendToDraft(id,entry.corrected);
+        if (acquiredId) retainReplay(acquiredId);
+        acquiredId = id;
+        update(entry);
+      }
+      return {ok:true,box:card(entry)};
     },
-    refresh(id) { const entry=entries.get(id);if(entry)update(entry); },
-    retry(id) {
-      const entry = entries.get(id);
-      if (entry?.state !== 'failed') return {ok:false,error:'再試行できる箱がありません。'};
-      if (!clip(entry.id,entry.version)) return {ok:false,error:'再試行できる原音がありません。'};
-      enqueue(entry);
-      return {ok:true};
-    },
-    dispose() { lifetime.abort();entries.clear(); },
+    dispose() { lifetime.abort(); entries.clear(); },
   };
 }
 

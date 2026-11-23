@@ -1,7 +1,10 @@
 const socket=SubtitleConnection.connect(),$=id=>document.getElementById(id),edit=$('edit');
 let settings={columns:15,mode:'page',keyColor:'#00ff00',fontSize:32,lineCount:2,captionFont:'noto-sans-jp',textColor:'#ffffff',outline:true,fontWeight:'normal'},online={},active=null;
 let throughMode=false;
-const aiReview=ReviewerBoxes.create(SubtitleConnection);
+const aiReview=ReviewerBoxes.create(SubtitleConnection, {
+  available:()=>ready && socket.connected && !composing && !pending && !blocked,
+  take:id=>socket.timeout(4000).emitWithAck('takeAiReviewBox',{id,session}),
+});
 const columnsStorageKey=SubtitleConnection.storageKey('columns');
 const logBackup=SubtitleLogBackup.create({scope:SubtitleConnection.storageKey('log-backup'),roomId:SubtitleConnection.roomId});
 function savedColumns(){try{const value=Number(localStorage.getItem(columnsStorageKey));return Number.isInteger(value)&&value>=10&&value<=40?value:null;}catch(_){return null;}}
@@ -63,7 +66,7 @@ function requireDraftReview(message){
   blocked=true;$('conflict').style.display='inline-block';status(message);buttons();save();
 }
 function status(text){$('status').textContent=text;}
-function buttons(){['send-one','send-two','out'].forEach(id=>$(id).disabled=!ready||!!pending||blocked||composing);}
+function buttons(){['send-one','send-two','out'].forEach(id=>$(id).disabled=!ready||!!pending||blocked||composing);aiReview.refreshControls();}
 function applySettings(s){if(composing||pending){deferredSettings=s;return;}settings={...s,textColor:s.textColor||'#ffffff',outline:s.outline!==false,fontWeight:s.fontWeight==='bold'?'bold':'normal'};$('columns').value=settings.columns;$('lineCount').value=settings.lineCount;$('mode').value=settings.mode;$('keyColor').value=settings.keyColor;$('keyColorCode').value=String(settings.keyColor).toUpperCase();$('captionFont').value=settings.captionFont||'noto-sans-jp';$('textColor').value=settings.textColor;$('outline').value=settings.outline?'on':'off';$('fontWeight').value=settings.fontWeight;edit.style.width='auto';edit.style.fontFamily=CaptionLayout.font;const parent=$('edit-scroll').getBoundingClientRect(),parentStyle=getComputedStyle($('edit-scroll')),rect=edit.getBoundingClientRect(),style=getComputedStyle(edit),edge=(rect.left-parent.left)-parseFloat(parentStyle.borderLeftWidth||0)-parseFloat(style.borderLeftWidth||0)+parseFloat(style.paddingLeft);const guide=$('edit-guide');guide.style.left=edge+'px';guide.style.fontFamily=style.fontFamily;guide.style.fontSize=style.fontSize;guide.style.fontWeight=style.fontWeight;guide.innerHTML='';const marker=document.createElement('span');marker.textContent='あ'.repeat(settings.columns);guide.appendChild(marker);edit.style.backgroundImage='none';fitEditorTerminalPeriod();$('fontSize').value=settings.fontSize;CaptionView.render($('capture'),currentCaption,settings);}
 for(let i=10;i<=40;i++){const o=document.createElement('option');o.value=i;o.textContent=i;$('columns').appendChild(o);}
 function emitSettings(){if(ready&&!pending&&!composing)socket.emit('setSettings',{columns:Number($('columns').value),mode:$('mode').value,keyColor:$('keyColor').value,fontSize:Number($('fontSize').value),lineCount:Number($('lineCount').value),captionFont:$('captionFont').value,textColor:$('textColor').value,outline:$('outline').value==='on',fontWeight:$('fontWeight').value});}
@@ -172,7 +175,14 @@ edit.addEventListener('compositionend',()=>{setTimeout(()=>{composing=false;if(a
 edit.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing&&!composing){e.preventDefault();document.execCommand('insertText',false,'\n');}});
 edit.addEventListener('paste',e=>{if(composing)return;e.preventDefault();document.execCommand('insertText',false,e.clipboardData.getData('text/plain').replace(/\r\n?/g,'\n'));});
 edit.addEventListener('drop',e=>e.preventDefault());edit.addEventListener('input',()=>{draftEdited();scheduleThrough();});
-document.addEventListener('keydown',e=>{if(e.key==='F12'){e.preventDefault();if(!e.repeat&&!e.isComposing&&document.activeElement===edit)submit(e.shiftKey?2:1);}});
+document.addEventListener('keydown',e=>{
+  if(aiReview.enabled && (e.key==='F1' || e.key==='F2') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey){
+    if(e.isComposing || composing || e.keyCode===229)return;
+    e.preventDefault();
+    if(!e.repeat){if(e.key==='F1')aiReview.takeNext();else aiReview.replay();}
+    return;
+  }
+  if(e.key==='F12'){e.preventDefault();if(!e.repeat&&!e.isComposing&&document.activeElement===edit)submit(e.shiftKey?2:1);}});
 $('send-one').onclick=()=>submit(1);$('send-two').onclick=()=>submit(2);
 function restoreDraft(result,sameRoomSession){
   const snapshot=result.reviewDraft;
@@ -219,7 +229,7 @@ function loadReviewer(result){
     seen.clear();historyIds.clear();$('sent').textContent='';$('queue').textContent='';
   }
   session=result.session;logBackup.start(session);
-  aiReview.load(result.mode,result.aiBoxes||[]);
+  aiReview.load(result.mode,result.aiBoxes||[],result.aiAcquiredId);
   restoreDraft(result,sameRoomSession);
   ready=true;
   applySettings(result.settings);
@@ -238,7 +248,7 @@ function loadReviewer(result){
 socket.on('connect',()=>joinReviewer(socket.id));
 socket.on('aiReviewBox',box=>aiReview.update(box));
 socket.on('reviewItem',receive);socket.on('subtitleLog',addHistory);socket.on('captionLogged',item=>logBackup.add(item));socket.on('roomInfo',info=>logBackup.setRoomName(info.name));socket.on('captionQueue',renderQueue);socket.on('caption',display);socket.on('settings',applySettings);socket.on('throughMode',enabled=>{throughMode=!!enabled;updateThroughMode();scheduleThrough();});socket.on('typing',typing);socket.on('presence',s=>{online=s;monitor();});socket.on('active',s=>{active=s;monitor();});
-socket.on('disconnect',()=>{aiReview.stopAudio();ready=false;status('切断中：編集内容は保持しています');online={};monitor();buttons();});
+socket.on('disconnect',()=>{aiReview.disconnect();ready=false;status('切断中：編集内容は保持しています');online={};monitor();buttons();});
 addEventListener('pagehide',()=>socket.disconnect());
 addEventListener('pageshow',event=>{if(event.persisted)socket.connect();});
 $('theme').onclick=()=>{document.body.classList.toggle('light');$('theme').textContent=document.body.classList.contains('light')?'黒背景に切替':'白背景に切替';};

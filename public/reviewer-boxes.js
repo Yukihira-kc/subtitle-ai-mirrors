@@ -1,6 +1,6 @@
 // The monitor shows box history. Only reviewItem feeds the editable draft.
 window.ReviewerBoxes = {
-  create(connection) {
+  create(connection, actions) {
     const get = id => document.getElementById(id);
     const list = get('ai-review-list');
     const empty = get('ai-review-empty');
@@ -12,9 +12,18 @@ window.ReviewerBoxes = {
     const cards = new Map();
     const labels = {
       'awaiting-audio':'音声待ち', queued:'校正待ち', processing:'校正中',
-      ready:'校正済み', failed:'校正失敗・後続の字幕は続行', skipped:'デスクがスキップ',
+      retrying:'自動再試行中', ready:'校正済み', 'audio-only':'音声のみ',
     };
-    let enabled = false;
+    let enabled = false, lastId = null, taking = null;
+    const takeButton = get('ai-take');
+    const replayButton = get('ai-replay');
+    const acquired = get('ai-acquired');
+    const autoplay = get('ai-auto-play');
+    const autoplayKey = connection.storageKey('reviewer-autoplay-on-take');
+    try { autoplay.checked = localStorage.getItem(autoplayKey)==='true'; } catch (_) {}
+    autoplay.onchange = () => {
+      try { localStorage.setItem(autoplayKey,String(autoplay.checked)); } catch (_) {}
+    };
     let context, active = null;
 
     function stopAudio() {
@@ -31,8 +40,13 @@ window.ReviewerBoxes = {
       previous.card.play.setAttribute('aria-pressed','false');
     }
 
-    async function playClip(card) {
-      const toggleOff = active?.card === card;
+    function openOutput() {
+      context ||= new AudioContext({latencyHint:'interactive'});
+      return context.resume();
+    }
+
+    async function playClip(card, toggle = true) {
+      const toggleOff = toggle && active?.card === card;
       stopAudio();
       if (toggleOff || !card.box.audio) return;
       const {id, version} = card.box;
@@ -43,8 +57,7 @@ window.ReviewerBoxes = {
       card.feedback.textContent = '';
       try {
         // Open the output within the user gesture, including in Firefox.
-        context ||= new AudioContext({latencyHint:'interactive'});
-        await context.resume();
+        await openOutput();
         if (active !== current) return;
         const room = encodeURIComponent(connection.roomId);
         const token = connection.token();
@@ -91,18 +104,8 @@ window.ReviewerBoxes = {
       const feedback = document.createElement('p');
       feedback.className = 'ai-review-note';
       feedback.setAttribute('role','status');
-      const details = document.createElement('details');
-      details.className = 'ai-review-original';
-      const summary = document.createElement('summary');
-      summary.textContent = '認識原文を確認';
-      const original = document.createElement('p');
-      original.className = 'ai-review-text';
-      details.append(summary,original);
-      row.append(top,text,note,details,feedback);
-      const card = {row,state,play,text,note,details,original,feedback};
-      details.addEventListener('toggle',() => {
-        original.textContent = details.open ? card.box.original || '' : '';
-      });
+      row.append(top,text,note,feedback);
+      const card = {row,state,play,text,note,feedback};
       // Keep F12 available when a reviewer clicks replay while editing.
       play.addEventListener('mousedown',event => {
         if (event.button===0 && document.activeElement===editor) event.preventDefault();
@@ -111,11 +114,11 @@ window.ReviewerBoxes = {
       return card;
     }
 
-    function update(box) {
+    function update(box, fromSnapshot = false) {
       if (!enabled || !Number.isSafeInteger(box?.id) || !Number.isSafeInteger(box.version)) return;
       let card = cards.get(box.id);
       if (card && box.version < card.box.version) return;
-      const atEnd = list.scrollHeight-list.clientHeight-list.scrollTop < 4;
+      const atEnd = !fromSnapshot && list.scrollHeight-list.clientHeight-list.scrollTop < 4;
       if (!card) {
         card = newCard(box.id);
         cards.set(box.id,card);
@@ -124,40 +127,128 @@ window.ReviewerBoxes = {
         list.insertBefore(card.row,next||null);
       }
       if (active?.card===card && (card.box.version!==box.version || !box.audio)) stopAudio();
-      const recovered = box.aiStatus === 'ready' && box.outOfSequence === true && box.delivered === false;
-      const hasOriginal = (box.aiStatus === 'failed' || recovered) && typeof box.original === 'string' && box.original.length > 0;
-      if (!hasOriginal || card.box?.version !== box.version) card.details.open = false;
-      card.details.hidden = !hasOriginal;
-      card.original.textContent = card.details.open && hasOriginal ? box.original : '';
       card.box = box;
-      card.state.textContent = labels[box.aiStatus] || '';
-      if (recovered) card.state.textContent = '再試行で校正済み・この欄のみ';
-      else if (box.aiStatus === 'ready' && box.delivered === false) card.state.textContent = '校正済み・先行する箱の処理待ち';
-      card.text.textContent = box.aiStatus === 'ready' ? box.text || '' : '';
+      const released = box.delivered === true;
+      const final = box.aiStatus === 'ready' || box.aiStatus === 'audio-only';
+      let state = labels[box.aiStatus] || '校正待ち';
+      if (final) state += released ? (box.acquired ? '・取得済み' : '・取得可能') : '・先行する箱の処理待ち';
+      card.state.textContent = state;
+      card.text.textContent = released && box.aiStatus === 'ready' ? box.text || '' : '';
       const notes = [];
-      if (box.aiStatus === 'failed') notes.push(box.aiError || '校正結果を取得できませんでした。');
+      if (released && box.aiStatus === 'audio-only') notes.push('原音を聞いて、必要な字幕を編集欄に入力してください。');
       if (box.approx && box.audio) notes.push('原音には前後の発話を含む場合があります。');
       card.note.textContent = notes.join(' ');
-      card.play.disabled = !box.audio;
+      card.play.disabled = !released || !box.audio;
       empty.hidden = true;
       if (atEnd) list.scrollTop = list.scrollHeight;
+      if (!fromSnapshot) refreshControls();
     }
 
-    function load(mode, boxes) {
+    function nextBox() {
+      const box = cards.get((lastId || 0)+1)?.box;
+      return box?.delivered && !box.acquired && (box.aiStatus==='ready' || box.aiStatus==='audio-only') ? box : null;
+    }
+
+    function refreshControls() {
+      if (!enabled) return;
+      takeButton.disabled = !!taking || !actions.available() || !nextBox();
+      replayButton.disabled = !actions.available() || !cards.get(lastId)?.box.audio;
+    }
+
+    function reportLast() {
+      const box = cards.get(lastId)?.box;
+      acquired.textContent = box ? '直近の取得：箱 '+box.id+(box.aiStatus==='audio-only'?'（音声のみ）':'') : '';
+    }
+
+    function disconnect() {
       stopAudio();
+      if (taking) clearTimeout(taking.timer);
+      taking = null;
+      lastId = null;
+      acquired.textContent = '';
+    }
+
+    function replay() {
+      if (enabled && !replayButton.disabled) playClip(cards.get(lastId),false);
+    }
+
+    function takeNext() {
+      if (!enabled || takeButton.disabled) return;
+      const box = nextBox();
+      if (!box) return;
+      const request = {id:box.id,autoplay:autoplay.checked && box.audio,focus:document.activeElement};
+      if (request.autoplay) {
+        // Unlock Firefox playback while the key or button gesture is active.
+        try { openOutput().catch(()=>{}); } catch (_) {}
+      }
+      taking = request;
+      refreshControls();
+      acquired.textContent = '箱 '+box.id+' を取得中…';
+      // Retrying exactly this ID also covers a lost acknowledgement after acquisition.
+      async function send() {
+        if (taking !== request) return;
+        let result;
+        try { result = await actions.take(request.id); }
+        catch (_) {
+          if (taking===request) {
+            acquired.textContent = '箱 '+request.id+' の受付を再確認しています。';
+            request.timer = setTimeout(send,800);
+          }
+          return;
+        }
+        if (taking !== request) return;
+        taking = null;
+        if (result?.ok && result.box?.id===request.id) {
+          stopAudio();
+          update(result.box);
+          lastId = request.id;
+          reportLast();
+          if (document.activeElement===request.focus && document.activeElement!==editor) {
+            editor.focus({preventScroll:true});
+            const range=document.createRange();
+            range.selectNodeContents(editor);
+            range.collapse(false);
+            const selection=window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          if (request.autoplay && result.box.audio) playClip(cards.get(lastId));
+        } else acquired.textContent = result?.error || '取得できませんでした。';
+        refreshControls();
+      }
+      send();
+    }
+
+    for (const button of [takeButton,replayButton]) {
+      button.addEventListener('mousedown',event=>{
+        if (event.button===0 && document.activeElement===editor) event.preventDefault();
+      });
+    }
+    takeButton.addEventListener('click',takeNext);
+    replayButton.addEventListener('click',replay);
+
+    function load(mode, boxes, acquiredId) {
+      disconnect();
       cards.clear();
       list.replaceChildren();
       enabled = mode === 'complete-ai';
       title.textContent = enabled ? 'Gemini校正・原音' : 'A・B・C 入力レビュー';
       get('monitors').hidden = enabled;
       list.hidden = !enabled;
+      get('ai-review-tools').hidden = acquired.hidden = !enabled;
       empty.hidden = !enabled;
-      editor.dataset.placeholder = enabled ? 'Geminiの校正結果が発話順に追加されます' : standardPlaceholder;
+      editor.dataset.placeholder = enabled ? 'F1で取得した校正文が末尾に追加されます' : standardPlaceholder;
       help.textContent = enabled
-        ? '校正済みの文章が発話順に追加されます。編集して先頭から送出します。' : standardHelp;
+        ? 'F1で次の箱を取得し、F2で取得した箱の原音を再生します。' : standardHelp;
       title.closest('section').hidden = false;
-      if (enabled) boxes.forEach(update);
+      if (enabled) {
+        for (const box of boxes) update(box,true);
+        list.scrollTop = list.scrollHeight;
+        lastId = acquiredId ?? null;
+        reportLast();
+        refreshControls();
+      }
     }
-    return {load,update,stopAudio};
+    return {load,update,disconnect,takeNext,replay,refreshControls,get enabled(){return enabled;}};
   },
 };
