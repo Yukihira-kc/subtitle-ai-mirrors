@@ -24,6 +24,7 @@ HOST = f'{LOCAL_ADDRESS}:{PORT}'
 ORIGINS = {
     'https://subtitle-ai-mirrors.vercel.app',
     'https://subtitle-ai-mirrors-th6k36zl5ltja.azurewebsites.net',
+    'https://subtitle-ai-complete-test.onrender.com',
 }
 PROTOCOL = 'caption-vosk'
 IDLE_SECONDS = 10 * 60

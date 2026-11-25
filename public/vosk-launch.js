@@ -5,9 +5,10 @@
   const publishedOrigins = new Set([
     'https://subtitle-ai-mirrors.vercel.app',
     'https://subtitle-ai-mirrors-th6k36zl5ltja.azurewebsites.net',
+    'https://subtitle-ai-complete-test.onrender.com',
   ]);
   const canLaunch = publishedOrigins.has(location.origin) && /^Win/i.test(navigator.platform);
-  const retryMessage = 'Vosk に接続できません。初回は Register-Vosk.cmd を実行し、Firefox のアプリ起動とローカルネットワーク接続を許可してください。手動では Start-Vosk.cmd から起動できます。';
+  const retryMessage = 'Vosk に接続できません。「Voskの設定・更新」から最新版を展開し、Register-Vosk.cmd を実行してください。Firefox でアプリの起動やローカルネットワークへのアクセスの確認が出たら、許可してください。';
   let lastReady = -Infinity;
   let probePending;
   let monitorTimer;

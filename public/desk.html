@@ -13,10 +13,10 @@
   <section class="recognition-settings" aria-label="音声認識の設定">
     <div class="control-row">
       <label>認識エンジン <select id="engine" autocomplete="off"><option value="vosk" selected>Vosk（無料練習）</option><option value="F0">Azure Speech（無料 F0）</option><option value="S0">Azure Speech（有料 S0）</option></select></label>
-      <details><summary>Voskの初回設定</summary><div class="detail-body">
-          <p><a href="/downloads/vosk-desktop.zip" download>Windows用Vosk起動ツールをダウンロード</a></p>
-          <p>デスクPCでZIPを展開します。以前セットアップしたフォルダーに展開すると、日本語モデルを再利用できます。</p>
-          <p>初回だけ Register-Vosk.cmd を実行します。「Vosk registration complete」と出たら［マイクで認識開始］を押し、Firefox にアプリを開く確認が出たら許可してください。</p>
+      <details><summary>Voskの設定・更新</summary><div class="detail-body">
+          <p><a href="/downloads/vosk-desktop.zip?v=complete-ai" download>Windows用Vosk起動ツールをダウンロード</a></p>
+          <p>デスクPCでZIPを展開します。更新する場合は起動中のVoskを終了し、以前のフォルダーに上書きすると日本語モデルを再利用できます。</p>
+          <p>初回と更新後に Register-Vosk.cmd を実行します。「Vosk registration complete」と出たら［マイクで認識開始］を押し、Firefox にアプリの起動やローカルネットワークへのアクセスの確認が出たら、許可してください。</p>
           <p>自動で開かない場合は、展開先のStart-Vosk.cmdで手動起動できます。</p>
         </div></details>
     </div>
@@ -48,7 +48,7 @@
 
 const $=id=>document.getElementById(id);
 
-</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=complete-ai"></script><script src="/desk-room.js?v=complete-ai-3"></script><script src="/vosk-launch.js"></script><script>
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=complete-ai"></script><script src="/desk-room.js?v=complete-ai-3"></script><script src="/vosk-launch.js?v=complete-ai"></script><script>
 const editor=$('pool');
 let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
 function appendPending(){
