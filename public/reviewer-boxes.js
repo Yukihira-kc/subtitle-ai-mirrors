@@ -10,6 +10,9 @@ window.ReviewerBoxes = {
     const standardHelp = help.textContent;
     const standardPlaceholder = editor.dataset.placeholder;
     const cards = new Map();
+    const workingLabel = document.createElement('strong');
+    workingLabel.className = 'ai-working-label';
+    workingLabel.textContent = '作業中';
     const labels = {
       'awaiting-audio':'音声待ち', queued:'校正待ち', processing:'校正中',
       retrying:'自動再試行中', ready:'校正済み', 'audio-only':'音声のみ',
@@ -105,7 +108,7 @@ window.ReviewerBoxes = {
       feedback.className = 'ai-review-note';
       feedback.setAttribute('role','status');
       row.append(top,text,note,feedback);
-      const card = {row,state,play,text,note,feedback};
+      const card = {row,top,state,play,text,note,feedback};
       // Keep F12 available when a reviewer clicks replay while editing.
       play.addEventListener('mousedown',event => {
         if (event.button===0 && document.activeElement===editor) event.preventDefault();
@@ -118,7 +121,7 @@ window.ReviewerBoxes = {
       if (!enabled || !Number.isSafeInteger(box?.id) || !Number.isSafeInteger(box.version)) return;
       let card = cards.get(box.id);
       if (card && box.version < card.box.version) return;
-      const atEnd = !fromSnapshot && list.scrollHeight-list.clientHeight-list.scrollTop < 4;
+      const followTail = !fromSnapshot && !lastId && list.scrollHeight-list.clientHeight-list.scrollTop < 4;
       if (!card) {
         card = newCard(box.id);
         cards.set(box.id,card);
@@ -140,7 +143,7 @@ window.ReviewerBoxes = {
       card.note.textContent = notes.join(' ');
       card.play.disabled = !released || !box.audio;
       empty.hidden = true;
-      if (atEnd) list.scrollTop = list.scrollHeight;
+      if (followTail) list.scrollTop = list.scrollHeight;
       if (!fromSnapshot) refreshControls();
     }
 
@@ -155,17 +158,31 @@ window.ReviewerBoxes = {
       replayButton.disabled = !actions.available() || !cards.get(lastId)?.box.audio;
     }
 
-    function reportLast() {
-      const box = cards.get(lastId)?.box;
-      acquired.textContent = box ? '直近の取得：箱 '+box.id+(box.aiStatus==='audio-only'?'（音声のみ）':'') : '';
+    function setWorkingBox(id) {
+      cards.get(lastId)?.row.removeAttribute('aria-current');
+      workingLabel.remove();
+      const card = cards.get(id);
+      lastId = card?.box.id ?? null;
+      if (!card) {
+        acquired.textContent = '';
+        return;
+      }
+      card.row.setAttribute('aria-current','true');
+      card.top.prepend(workingLabel);
+      acquired.textContent = '直近の取得：箱 '+id+(card.box.aiStatus==='audio-only'?'（音声のみ）':'');
+
+      // Move only this list. A tall card should open with its heading visible.
+      const top = list.getBoundingClientRect().top + list.clientTop;
+      const row = card.row.getBoundingClientRect();
+      if (row.top < top || row.height >= list.clientHeight) list.scrollTop += row.top - top;
+      else if (row.bottom > top + list.clientHeight) list.scrollTop += row.bottom - (top + list.clientHeight);
     }
 
     function disconnect() {
       stopAudio();
       if (taking) clearTimeout(taking.timer);
       taking = null;
-      lastId = null;
-      acquired.textContent = '';
+      setWorkingBox(null);
     }
 
     function replay() {
@@ -201,8 +218,7 @@ window.ReviewerBoxes = {
         if (result?.ok && result.box?.id===request.id) {
           stopAudio();
           update(result.box);
-          lastId = request.id;
-          reportLast();
+          setWorkingBox(request.id);
           if (document.activeElement===request.focus && document.activeElement!==editor) {
             editor.focus({preventScroll:true});
             const range=document.createRange();
@@ -243,9 +259,8 @@ window.ReviewerBoxes = {
       title.closest('section').hidden = false;
       if (enabled) {
         for (const box of boxes) update(box,true);
-        list.scrollTop = list.scrollHeight;
-        lastId = acquiredId ?? null;
-        reportLast();
+        setWorkingBox(acquiredId);
+        if (!lastId) list.scrollTop = list.scrollHeight;
         refreshControls();
       }
     }
