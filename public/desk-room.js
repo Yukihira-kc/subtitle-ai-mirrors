@@ -186,10 +186,10 @@ function applyDeskState(change){
   }
 }
 function draw(){
-  $('cut').disabled=!deskConnected||!geminiAvailable()||composing||!editor.value.trim();
+  $('cut').disabled=!deskConnected||!geminiAvailable()||switchingEngine||composing||!editor.value.trim();
 }
 function updateDeskControls(){
-  $('engine').disabled=!deskConnected||deskRecognitionBusy;
+  $('engine').disabled=!deskConnected||deskRecognitionBusy||switchingEngine;
   $('start').disabled=$('engine').disabled||!geminiAvailable();
   draw();
 }
@@ -197,7 +197,7 @@ function setDeskRecognitionBusy(busy){
   deskRecognitionBusy=busy;
   updateDeskControls();
 }
-function switchEngine(previous){
+async function switchEngine(previous){
  const picker=$('engine'),next=picker.value;
  if(switchingEngine || picker.disabled || next===previous){picker.value=previous;return;}
  if((pendingBoxes.size || editor.value.trim()) && !confirm('未送信の原稿と転送中の音声は引き継がれません。認識エンジンを切り替えますか？')){
@@ -212,6 +212,11 @@ function switchEngine(previous){
  }
  switchingEngine=true;
  picker.value=previous;
+ updateDeskControls();
+ // Polling requests may be canceled on navigation, so acknowledge the desk release first.
+ if(deskConnected){
+   try{await deskSocket.timeout(2000).emitWithAck('leaveDesk',{});}catch{}
+ }
  deskSocket.disconnect();
  location.assign(url);
 }

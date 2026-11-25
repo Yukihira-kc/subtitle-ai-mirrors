@@ -535,3 +535,29 @@ test('キーはデスクの接続とルームごとに分かれ、受付済み�
     assert.ok(!saved.includes(secret) && !saved.includes(sha256(secret)));
   }
 });
+
+test('デスクの席は所有中の接続が明示的に返せば切断前でも引き継げる', {timeout:8000}, async t => {
+  const app = await startServer(t);
+  const complete = await app.room('画面切り替えの完全AI案件',{mode:'complete-ai'});
+  assert.equal(complete.status,201);
+  const [previous, successor] = await Promise.all([app.connect(complete),app.connect(complete)]);
+  await joinGeminiDesk(previous);
+
+  // Releasing from a waiting socket cannot free a different connection's seat.
+  await call(successor,'leaveDesk',{});
+  assert.equal((await call(successor,'joinDesk',{})).ok,false);
+  assert.equal((await call(previous,'leaveDesk',{})).ok,true);
+  assert.equal(previous.connected,true);
+  assert.equal((await call(successor,'joinDesk',{})).ok,true);
+
+  // A repeated release from the previous desk must not disturb the new owner.
+  await call(previous,'leaveDesk',{});
+  assert.equal((await call(previous,'joinDesk',{})).ok,false);
+  assert.equal((await call(previous,'setGeminiKey',{key:deskKey})).ok,false);
+  const box = {key:'leave-desk/1',version:1,text:'切り替え後の原稿',clip:wave(420),forReview:true};
+  const withoutKey = await call(successor,'publishBox',box);
+  assert.equal(withoutKey.ok,false);
+  assert.equal(withoutKey.retryable,false);
+  assert.equal((await call(successor,'setGeminiKey',{key:successorKey})).ok,true);
+  assert.equal((await call(successor,'publishBox',box)).ok,true);
+});

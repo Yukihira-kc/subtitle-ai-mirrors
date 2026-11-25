@@ -5,7 +5,7 @@ const totalLimit = 96 * 1024 * 1024;
 let bytesInUse = 0;
 const replayClips = new Map();
 
-module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDesk}={}) {
+module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDesk, onLeaveDesk}={}) {
   const byId = new Map(), byKey = new Map();
   let desk = null;
   function metadata(box) {
@@ -17,6 +17,12 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDe
     replayClips.delete(box);
     bytesInUse -= box.clip?.length || 0;
     box.clip = null;
+  }
+  function leaveDesk(socket) {
+    if (desk !== socket.id) return false;
+    desk = null;
+    onLeaveDesk?.();
+    return true;
   }
   function held(role) {
     return [...byId.values()].find(box => box.owner === role && !box.sent);
@@ -45,7 +51,10 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDe
         desk = socket.id;
         reply({ok:true,mode});
       });
-      socket.on('disconnect', () => { if (desk === socket.id) desk = null; });
+      socket.on('leaveDesk', (_, reply) => {
+        if (typeof reply === 'function') reply({ok:leaveDesk(socket)});
+      });
+      socket.on('disconnect', () => leaveDesk(socket));
       socket.on('publishBox', (data, reply) => {
         if (typeof reply !== 'function') return;
         if (desk !== socket.id) return reply({ok:false,error:'デスクの接続を確認してください'});

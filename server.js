@@ -115,7 +115,9 @@ const ai=mode==='complete-ai'?createAiBoxReview({
   },
   retainReplay:id=>boxes.retainReplay(id),
 }):null;
-const boxes = require('./boxes')(ai ? ()=>io.to(deskChannel) : broadcast,{mode,ai,canJoinDesk:s=>!ai || s.id!==reviewer});
+const boxes = require('./boxes')(ai ? ()=>io.to(deskChannel) : broadcast,{
+  mode,ai,canJoinDesk:s=>!ai || s.id!==reviewer,onLeaveDesk:clearDeskCredentials,
+});
 const receipts = new Map();
 let columnsInitialized=false;
 const order=['A','B','C'], inputs={A:'',B:'',C:''};
@@ -202,7 +204,6 @@ function snapshot(s){s.emit('settings',settings);s.emit('caption',display);}
 function connect(s){
   boxes.connect(s);
   s.on('setGeminiKey',(data,ack)=>setGeminiKey(s,data,ack));
-  s.on('disconnecting',()=>{if(boxes.isDesk(s.id))clearDeskCredentials();});
   s.on('getGeminiDictionary',(_,ack)=>{
     if(typeof ack!=='function')return;
     if(!isDictionaryEditor(s))return ack({ok:false,error:'完全AI版の担当として接続してください。'});
