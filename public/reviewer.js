@@ -1,6 +1,7 @@
 const socket=SubtitleConnection.connect(),$=id=>document.getElementById(id),edit=$('edit');
 let settings={columns:15,mode:'page',keyColor:'#00ff00',fontSize:32,lineCount:2,captionFont:'noto-sans-jp',textColor:'#ffffff',outline:true,fontWeight:'normal'},online={},active=null;
 let throughMode=false;
+const reviewDictionary=GeminiDictionary.create(socket);
 const aiReview=ReviewerBoxes.create(SubtitleConnection, {
   available:()=>ready && socket.connected && !composing && !pending && !blocked,
   take:id=>socket.timeout(4000).emitWithAck('takeAiReviewBox',{id,session}),
@@ -230,6 +231,7 @@ function loadReviewer(result){
   }
   session=result.session;logBackup.start(session);
   aiReview.load(result.mode,result.aiBoxes||[],result.aiAcquiredId);
+  reviewDictionary.join(result.mode);
   restoreDraft(result,sameRoomSession);
   ready=true;
   applySettings(result.settings);

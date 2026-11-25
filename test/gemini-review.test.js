@@ -22,9 +22,9 @@ function wav(rate, samples) {
   return buffer;
 }
 
-function fixture(chunks) {
+function fixture(chunks, files) {
   const requests = [];
-  const client = { models: { async *generateContentStream(options) {
+  const client = { files, models: { async *generateContentStream(options) {
     requests.push(options);
     yield *chunks;
   } } };
@@ -94,4 +94,51 @@ test('Gemini output that is empty, blocked, stopped early or too long is never r
   ]).review(request), /完了/);
   await assert.rejects(fixture([{ text: '途中で切れた字幕' }]).review(request), /完了/);
   await assert.rejects(fixture([{ text: 'あ'.repeat(16001) }]).review(request), /長すぎ/);
+});
+
+test('辞書は1回だけUTF-8で登録し、各箱の校閲には同じファイルURIを添える', async () => {
+  const text = '字幕連係\tじまくれんけい\n青葉台\tあおばだい';
+  const name = 'files/test-dictionary';
+  const uri = 'https://generativelanguage.googleapis.com/v1beta/'+name;
+  const expirationTime = new Date(Date.now()+3600000).toISOString();
+  const uploads = [], polls = [];
+  const files = {
+    async upload(parameters) { uploads.push(parameters); return {state:'PROCESSING', name}; },
+    async get(parameters) { polls.push(parameters); return {state:'ACTIVE', uri, expirationTime}; },
+  };
+  const {review, requests} = fixture([{text:'字幕', candidates:[{finishReason:'STOP'}]}], files);
+  const dictionary = await review.registerDictionary(text);
+  assert.deepEqual(dictionary, {uri, expiresAt:Date.parse(expirationTime)});
+  assert.equal(polls.length,1);
+  assert.equal(polls[0].name,name);
+  assert.ok(uploads[0].config.abortSignal instanceof AbortSignal);
+  assert.equal(polls[0].config.abortSignal, uploads[0].config.abortSignal);
+  const data = {audio:wav(16000,[10,-10]), text:'音声認識文'};
+  await review(data);
+  await review({...data,dictionary});
+  await review({...data,dictionary});
+  assert.equal(uploads.length,1);
+  assert.equal(uploads[0].file.type,'text/plain');
+  assert.deepEqual(Buffer.from(await uploads[0].file.arrayBuffer()), Buffer.from(text,'utf8'));
+  const [plain,...withDictionary] = requests;
+  assert.equal(plain.contents[0].parts.length,2);
+  assert.ok(!plain.config.systemInstruction.includes('辞書'));
+  for (const request of withDictionary) {
+    assert.deepEqual(request.contents[0].parts, [...plain.contents[0].parts, {fileData:{fileUri:uri,mimeType:'text/plain'}}]);
+    assert.ok(request.config.systemInstruction.startsWith(plain.config.systemInstruction));
+    assert.match(request.config.systemInstruction,/音声と文意/);
+    assert.ok(!JSON.stringify(request).includes('青葉台'));
+  }
+});
+
+test('処理失敗・有効期限やURIの欠落した辞書を登録済みとして返さない', async () => {
+  const uri = 'https://generativelanguage.googleapis.com/v1beta/files/test';
+  for (const response of [
+    {state:'FAILED'}, {state:'PROCESSING'}, {state:'ACTIVE',uri},
+    {state:'ACTIVE',uri,expirationTime:'2000-01-01T00:00:00Z'},
+    {state:'ACTIVE', expirationTime:new Date(Date.now()+60000).toISOString()},
+  ]) {
+    const {review} = fixture([], {async upload(){return response;}});
+    await assert.rejects(review.registerDictionary('例\tれい'), /辞書を登録/);
+  }
 });

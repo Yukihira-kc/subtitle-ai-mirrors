@@ -24,6 +24,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
   return {
     list() { return [...byId.values()].map(metadata); },
     held,
+    isDesk(socketId) { return desk === socketId; },
     finish(box) { if (box) { box.sent = true; release(box); update(box); } },
     refresh(id) { const box=byId.get(id);if(box)update(box); },
     retainReplay(id) {

@@ -1,5 +1,6 @@
 const boxes = []; // Local word timing references for the current recording.
 
+const deskDictionary = GeminiDictionary.create(deskSocket);
 const pendingBoxes = new Map(), deskRows = new Map();
 const role='デスク';
 let deskConnected=false, switchingEngine=false, deskRecognitionBusy=false;
@@ -117,7 +118,7 @@ function applyDeskState(change){
     deskConnected=change.type==='ready';
     deskConnectionMessage=change.message;
     updateDeskControls();showDelivery();
-    if(deskConnected)configureDeskLinks();
+    if(deskConnected){configureDeskLinks();deskDictionary.join(deskMode);}
   }
 }
 function draw(){

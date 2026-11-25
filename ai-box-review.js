@@ -32,7 +32,7 @@ async function reviewUntilAbort(review, request) {
   }
 }
 
-function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay, timeoutMs=defaultDeadlineMs}) {
+function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay, dictionary, timeoutMs=defaultDeadlineMs}) {
   const entries = new Map();
   const lifetime = new AbortController();
   const deadlineMs = Number.isSafeInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 60_000
@@ -72,7 +72,8 @@ function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay,
       const deadline = AbortSignal.timeout(attempt === 1 ? deadlineMs : Math.min(60_000,deadlineMs * 2));
       const signal = AbortSignal.any([lifetime.signal,deadline]);
       try {
-        const corrected = await reviewUntilAbort(review,{audio,text:entry.original,signal});
+        const activeDictionary = entry.dictionary?.expiresAt > Date.now() ? entry.dictionary : undefined;
+        const corrected = await reviewUntilAbort(review,{audio,text:entry.original,signal,dictionary:activeDictionary});
         signal.throwIfAborted();
         if (typeof corrected !== 'string' || !corrected.trim()) throw new Error('Empty Gemini result');
         entry.corrected = corrected.trim();
@@ -87,6 +88,7 @@ function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay,
         if (attempt === 2) entry.state = 'audio-only';
       }
     }
+    entry.dictionary = undefined;
     releaseInOrder(entry);
   }
 
@@ -94,7 +96,8 @@ function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay,
     available:!!schedule,
     get acquiredId() { return acquiredId; },
     accept({id,version,approx,text}) {
-      const entry = {id,version,approx,original:text,corrected:'',error:'',state:'queued',attempt:0,delivered:false};
+      const entry = {id,version,approx,original:text,corrected:'',error:'',state:'queued',attempt:0,delivered:false,
+        dictionary:dictionary?.()};
       entries.set(id,entry);
       update(entry);
       schedule(review => run(entry,review));

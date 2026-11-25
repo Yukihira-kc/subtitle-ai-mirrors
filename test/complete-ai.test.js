@@ -24,9 +24,9 @@ const {createHash} = require('node:crypto');
 const originalLoad = Module._load;
 function createGeminiReview() {
   const attempts = new Map();
-  return async ({audio, text, signal}) => {
+  const review=async ({audio, text, signal, dictionary}) => {
     const digest = createHash('sha256').update(audio).digest('hex');
-    appendFileSync(process.env.TEST_GEMINI_CALLS, JSON.stringify({text,digest})+'\\n');
+    appendFileSync(process.env.TEST_GEMINI_CALLS, JSON.stringify({text,digest,dictionaryUri:dictionary?.uri})+'\\n');
     const attempt = (attempts.get(text)||0)+1;
     attempts.set(text,attempt);
     if (text.startsWith('二度停止する原文')) return new Promise(()=>{});
@@ -43,6 +43,13 @@ function createGeminiReview() {
       throw Object.assign(new Error('Temporary fixture error'),{status:503});
     return '校正：'+text;
   };
+  let uploads = 0;
+  review.registerDictionary = async text => {
+    appendFileSync(process.env.TEST_GEMINI_DICTIONARIES,text+'\\n');
+    if (text.includes('アップロード失敗')) throw new Error('Provider unavailable');
+    return {uri:'https://mock.invalid/files/'+(++uploads),expiresAt:Date.now()+86400000};
+  };
+  return review;
 }
 Module._load = function(request, parent, isMain) {
   if (/^\\.\\/gemini-review(?:\\.js)?$/.test(request) && parent?.filename.endsWith('/server.js'))
@@ -57,11 +64,12 @@ async function startServer(t, settings = {}) {
   const fixture = path.join(directory, 'gemini-mock.cjs');
   const calls = path.join(directory, 'gemini-calls.jsonl');
   const stale = path.join(directory, 'gemini-stale.log');
-  await Promise.all([writeFile(fixture, mockGemini), writeFile(calls, ''), writeFile(stale, '')]);
+  const dictionaries = path.join(directory, 'gemini-dictionaries.txt');
+  await Promise.all([writeFile(fixture, mockGemini), writeFile(calls, ''), writeFile(stale, ''), writeFile(dictionaries, '')]);
   const processEnv = {
     ...process.env, PORT:'0', ROOM_STORE_PATH:path.join(directory,'rooms.json'),
     GEMINI_API_KEY:'', COMPLETE_AI_ACCESS_CODE:'', GEMINI_REVIEW_TIMEOUT_MS:'',
-    TEST_GEMINI_CALLS:calls, TEST_GEMINI_STALE:stale,
+    TEST_GEMINI_CALLS:calls, TEST_GEMINI_STALE:stale, TEST_GEMINI_DICTIONARIES:dictionaries,
     ...settings,
   };
   const child = spawn(process.execPath, ['--require', fixture, 'server.js'], {cwd:root, env:processEnv});
@@ -107,7 +115,7 @@ async function startServer(t, settings = {}) {
       await delay(20);
     }
   }
-  return {url,room,socket,connect,geminiCalls,waitForStaleResult};
+  return {url,room,socket,connect,geminiCalls,waitForStaleResult,readDictionaries:()=>readFile(dictionaries,'utf8')};
 }
 
 function wave(sample) {
@@ -366,4 +374,54 @@ test('すべての枠が二度時間切れでも、待機中の箱は空き枠�
   const calls = (await app.geminiCalls()).map(item=>item.text);
   assert.equal(calls.length,7);
   assert.ok(stalledTexts.every(text=>calls.filter(callText=>callText===text).length===2));
+});
+
+test('デスクと校閲が事前登録したIME辞書を同じ部屋の箱が参照する', {timeout:12000}, async t => {
+  const app = await startServer(t,{
+    GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode,
+  });
+  const complete = await app.room('辞書のある完全AI案件',{mode:'complete-ai',code:accessCode});
+  const [desk, editor, observer] = await Promise.all([app.connect(complete),app.connect(complete),app.connect(complete)]);
+  assert.equal((await call(desk,'deskState',{})).ok,true);
+  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  assert.equal((await call(editor,'joinReviewer',reviewer)).ok,true);
+  assert.deepEqual(await call(editor,'getGeminiDictionary',{}),{ok:true,dictionary:null});
+
+  const original = Buffer.from('\ufeff!Microsoft IME Dictionary Tool\r\nよみ\t語句\t品詞\tコメント\r\nらいとくん\t光くん\t人名\t辞書側のメモ\r\nふりがな\tフリガナ\t名詞\t\r\n','utf16le');
+  const registration = {name:'出演者.txt',file:original};
+  assert.equal((await call(observer,'registerGeminiDictionary',registration)).ok,false);
+  assert.equal((await call(desk,'registerGeminiDictionary',{name:'不正.txt',file:Buffer.from('よみのみ')})).ok,false);
+  const notification = once(editor,'geminiDictionary',{signal:AbortSignal.timeout(2000)});
+  const first = await call(desk,'registerGeminiDictionary',registration);
+  assert.equal(first.ok,true);
+  assert.equal(first.dictionary.count,2);
+  assert.equal(first.dictionary.name,'出演者.txt');
+  assert.deepEqual((await notification)[0],first.dictionary);
+  assert.equal(await app.readDictionaries(),'らいとくん\t光くん\nふりがな\tフリガナ\n');
+  assert.equal((await call(observer,'getGeminiDictionary',{})).ok,false);
+
+  const publish = (id,text) => call(desk,'publishBox',{key:'辞書/'+id,version:1,text,clip:wave(25),forReview:true});
+  const ready = waitForBox(editor,card=>card.id===2 && card.delivered);
+  assert.equal((await publish(1,'ライト君。')).ok,true);
+  assert.equal((await publish(2,'それ以外の一般語。')).ok,true);
+  await ready;
+  assert.equal((await app.readDictionaries()).split('光くん').length,2);
+  assert.deepEqual((await app.geminiCalls()).map(x=>x.dictionaryUri),['https://mock.invalid/files/1','https://mock.invalid/files/1']);
+
+  const invalidReplacement = {name:'失敗.txt',file:Buffer.from('しっぱい\tアップロード失敗\t名詞')};
+  assert.equal((await call(editor,'registerGeminiDictionary',invalidReplacement)).ok,false);
+  assert.deepEqual((await call(desk,'getGeminiDictionary',{})).dictionary,first.dictionary);
+  const replacement = {name:'改訂.txt',file:Buffer.from('ひかるくん\t光くん\t人名\t備考')};
+  const deskUpdate = once(desk,'geminiDictionary',{signal:AbortSignal.timeout(2000)});
+  assert.equal((await call(editor,'registerGeminiDictionary',replacement)).ok,true);
+  assert.equal((await deskUpdate)[0].name,'改訂.txt');
+  const third = waitForBox(editor,card=>card.id===3 && card.delivered);
+  assert.equal((await publish(3,'光る君。')).ok,true);
+  await third;
+  assert.equal((await app.geminiCalls()).at(-1).dictionaryUri,'https://mock.invalid/files/2');
+
+  const independent = await app.room('別の完全AI案件',{mode:'complete-ai',code:accessCode});
+  const otherDesk = await app.connect(independent);
+  await call(otherDesk,'joinDesk',{});
+  assert.deepEqual(await call(otherDesk,'getGeminiDictionary',{}),{ok:true,dictionary:null});
 });
