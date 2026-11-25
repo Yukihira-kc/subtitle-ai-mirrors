@@ -2,6 +2,7 @@
   'use strict';
   const C=SubtitleConnection,$=id=>document.getElementById(id),params=new URLSearchParams(location.search);
   const directNext=['index.html','reviewer.html','output.html','desk.html','azure.html'].includes(params.get('next'))?params.get('next'):'index.html';
+  const completeAiOption=$('new-mode').querySelector('option[value="complete-ai"]');
   let selected=null,selection=0,busy=false;
   const pinFields=['new-password','join-password','change-password'];
   function resetFields(id){$(id).querySelectorAll('input').forEach(input=>{input.value='';});}
@@ -72,6 +73,10 @@
   }
   async function refresh(){
     const data=await C.api('/rooms');
+    completeAiOption.disabled=data.completeAiAvailable!==true;
+    if(completeAiOption.disabled && $('new-mode').value==='complete-ai'){
+      $('new-mode').value='standard';updateMode();
+    }
     $('room-list').replaceChildren();
     data.rooms.forEach(room=>{
       const row=document.createElement('div');row.className='room row';
@@ -91,9 +96,10 @@
   bindAction('create-form',()=>{
     const name=$('new-name').value,mode=$('new-mode').value;
     const password=takePassword('new-password');
-    const data={name,password,mode};
     action(async()=>{
-      const result=await C.api('/rooms',{method:'POST',body:JSON.stringify(data)});
+      // A server on the earlier release cannot mistake this for a standard room.
+      const path=mode==='complete-ai'?'/rooms/complete-ai':'/rooms';
+      const result=await C.api(path,{method:'POST',body:JSON.stringify({name,password})});
       C.remember(result.room.id,result.token);resetFields('create-form');selected={room:result.room,purpose:'enter',next:'index.html'};proceed();
     });
   });

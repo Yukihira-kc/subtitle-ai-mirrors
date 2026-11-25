@@ -97,7 +97,7 @@ details { position: relative; }
 }
 .recognition-settings { flex: none; }
 .control-row + .control-row, .status-row { margin-top: 6px; }
-.control-row label { display: inline-flex; align-items: center; gap: 6px; }
+.control-row label:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; }
 .control-row select { max-width: 20rem; }
 .control-row input[type=password] { width: 12em; }
 #region { width: 8em; }

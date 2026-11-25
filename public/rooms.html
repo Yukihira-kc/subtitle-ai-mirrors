@@ -16,7 +16,7 @@
     <label>字幕作成方式
       <select id="new-mode" aria-describedby="new-mode-help">
         <option value="standard">通常版</option>
-        <option value="complete-ai">完全AI版</option>
+        <option value="complete-ai" disabled>完全AI版</option>
       </select>
     </label>
     <p id="new-mode-help" class="help muted" aria-live="polite">入力担当が原稿を送り、校閲から字幕を送出します。</p>
@@ -29,4 +29,4 @@
 </div></main>
 <dialog id="join-dialog" aria-labelledby="join-title"><h2 id="join-title"></h2><p id="join-purpose" class="muted"></p><p id="join-status" class="dialog-status" role="status"></p><div id="join-form" role="group" aria-label="ルームの認証"><label>入室パスワード<input id="join-password" type="password" required minlength="4" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></label><div class="actions"><button class="primary" type="button" data-action>認証して進む</button><button type="button" data-close="join-dialog">キャンセル</button></div></div></dialog>
 <dialog id="manage-dialog" aria-labelledby="manage-title"><div class="row"><h2 id="manage-title"></h2><button type="button" data-close="manage-dialog">閉じる</button></div><p class="help muted">このルームに認証済みの人が操作できます。パスワード変更時は各画面の再入室が必要です。</p><p id="manage-status" class="dialog-status" role="status"></p><div id="password-form" role="group" aria-label="パスワード変更"><label>新しいパスワード<input id="change-password" type="password" required minlength="4" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></label><button type="button" data-action>パスワードを変更</button></div><div class="actions"><button type="button" id="delete-room" class="danger">この案件ルームを削除</button><button type="button" id="forget-room">このブラウザの入室情報を解除</button></div></dialog>
-<script src="rooms-ui.js?v=gemini-key"></script></body></html>
+<script src="rooms-ui.js?v=complete-ai-release"></script></body></html>

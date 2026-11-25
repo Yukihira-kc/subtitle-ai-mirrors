@@ -154,11 +154,16 @@ async function waitForBox(socket, match) {
 
 test('完全AIルームはキーなしで作成でき、校閲にはデスクのキーが必要', {timeout:8000}, async t => {
   const app = await startServer(t);
-  const complete = await app.room('完全AIルーム', {mode:'complete-ai'});
-  assert.equal(complete.status,201);
+  const creation = await fetch(app.url+'/ai/api/rooms/complete-ai', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:'完全AIルーム',password:'1234'}),
+  });
+  assert.equal(creation.status,201);
+  const complete = await creation.json();
   assert.equal(complete.room.protected,true);
+  assert.equal(complete.room.mode,'complete-ai');
   const listing = await fetch(app.url+'/ai/api/rooms').then(response=>response.json());
-  assert.notEqual(listing.completeAiAvailable,false);
+  assert.equal(listing.completeAiAvailable,true);
   const standard = await app.room('通常ルーム');
   assert.equal(standard.status,201);
   assert.equal(standard.room.mode,'standard');

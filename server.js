@@ -8,7 +8,7 @@ const server = http.createServer(app);
 app.get('/healthz', (_, res) => res.json({app:'subtitle-ai-mirrors'}));
 app.get('/', (_, res) => res.redirect('/rooms.html'));
 const installSpeechUsage = require('./speech-usage');
-installSpeechUsage(app);
+const readSpeechRegions=installSpeechUsage(app);
 app.use(express.static(path.join(__dirname, 'public')));
 const Pagination=require('./pagination.js');
 const createReviewerDraft=require('./reviewer-draft');
@@ -16,10 +16,6 @@ const {createAiQueue,createAiBoxReview}=require('./ai-box-review');
 const {parseDictionary}=require('./gemini-dictionary');
 const {createGeminiReview}=require('./gemini-review');
 const aiSchedule=createAiQueue();
-const azureSpeechRegions={
-  F0:process.env.AZURE_SPEECH_F0_REGION?.trim().toLowerCase() || 'japaneast',
-  S0:process.env.AZURE_SPEECH_S0_REGION?.trim().toLowerCase() || 'japaneast',
-};
 const azureSpeechKeyLinks={
   F0:installSpeechUsage.portalKeysUrl(process.env,'F0'),
   S0:installSpeechUsage.portalKeysUrl(process.env,'S0'),
@@ -215,11 +211,12 @@ function connect(s){
     ack({ok:true,dictionary:dictionaryState()});
   });
   s.on('registerGeminiDictionary',(data,ack)=>registerDictionary(s,data,ack));
-  s.on('deskState', (_, ack) => {
+  s.on('deskState', async (data, ack) => {
     if(typeof ack!=='function')return;
     if(ai && s.id===reviewer)return ack({ok:false,error:'校閲担当として接続中です。'});
     if(ai)s.join(deskChannel);
-    ack({ok:true,mode,boxes:boxes.list(),settings,raw,azureSpeechRegions,azureSpeechKeyLinks:ai?azureSpeechKeyLinks:undefined});
+    const azureSpeechRegions=ai && data?.azureSpeech===true?await readSpeechRegions():undefined;
+    if(s.connected)ack({ok:true,mode,boxes:boxes.list(),settings,raw,azureSpeechRegions,azureSpeechKeyLinks:ai?azureSpeechKeyLinks:undefined});
   });
   snapshot(s);s.emit('version','v29.5');s.emit('presence',getPresence());s.emit('active',active);
   s.on('joinOutput',()=>{outputs.add(s.id);if(authority()!==displayAuthority)resetClock();else s.emit('caption',display);});

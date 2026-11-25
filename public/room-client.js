@@ -30,7 +30,8 @@ function retryDesk(action, socketId, message) {
   },1000);
 }
 function loadDeskState(socketId) {
-  deskSocket.timeout(5000).emit('deskState',{},(error,snapshot)=>{
+  const azureSpeech=location.pathname.endsWith('/azure.html');
+  deskSocket.timeout(5000).emit('deskState',{azureSpeech},(error,snapshot)=>{
     if(deskSocket.id!==socketId)return;
     if(error || !snapshot?.ok){
       retryDesk(loadDeskState,socketId,'音声認識テキストを再取得しています…');

@@ -67,10 +67,10 @@ module.exports = function installRooms(app, io, createRuntime) {
   app.use('/ai/api',require('express').json({limit:'8kb'}));
   app.get('/ai/api/rooms',(req,res)=>res.json({rooms:[...rooms.values()].map(publicRoom),completeAiAvailable:true}));
   app.get('/ai/api/rooms/:id',(req,res)=>{const room=rooms.get(req.params.id);if(!room)return res.status(404).json({error:'ルームがありません。'});res.json({room:publicRoom(room)});});
-  app.post('/ai/api/rooms',endpoint(async(req,res)=>{
+  app.post(['/ai/api/rooms','/ai/api/rooms/complete-ai'],endpoint(async(req,res)=>{
     const name=typeof req.body?.name==='string'?req.body.name.trim():'';
     const password=normalizePassword(req.body?.password);
-    const mode=req.body?.mode??'standard';
+    const mode=req.path==='/ai/api/rooms/complete-ai'?'complete-ai':(req.body?.mode??'standard');
     if(mode!=='standard'&&mode!=='complete-ai')return res.status(400).json({error:'ルームの種類を選んでください。'});
     if(!name||name.length>80||name==='練習用'||!validPassword(password))return res.status(400).json({error:'案件名は1〜80文字、パスワードは数字4桁で入力してください。「練習用」は常設ルーム名です。'});
     if([...rooms.values()].some(r=>r.name===name))return res.status(409).json({error:'同じ案件名のルームがあります。別の名前を付けてください。'});

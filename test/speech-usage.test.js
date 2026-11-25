@@ -49,12 +49,12 @@ async function fixture(t, overrides={}, arm=()=>metricResponse(543.75)) {
     return Response.json(await arm(url));
   };
   const app = express();
-  install(app, {env, fetchImpl, clock:()=>at});
+  const readSpeechRegions=install(app, {env, fetchImpl, clock:()=>at});
   const server=app.listen(0,'127.0.0.1');
   t.after(()=>new Promise(resolve=>{server.close(resolve); server.closeAllConnections();}));
   await once(server,'listening');
   return {
-    calls, setTime(ms){at=ms;},
+    calls, readSpeechRegions, setTime(ms){at=ms;},
     get(tier, headers={}, method='GET'){
       return fetch('http://127.0.0.1:'+server.address().port+'/ai/api/speech-usage/'+tier,{headers,method});
     },
@@ -99,6 +99,22 @@ test('an unconfigured tier does not call Azure', async t=>{
   assert.equal(response.status,503);
   assert.deepEqual(await response.json(),{error:'not_configured'});
   assert.equal(app.calls.length,0);
+});
+
+test('Speech locations resolve independently and retain configured overrides', async t=>{
+  let location = 'japaneast';
+  const app = await fixture(t, {AZURE_SPEECH_F0_REGION:' JapanWest '}, url=>{
+    assert.equal(decodeURIComponent(url.pathname),resourceBase+'speech-paid');
+    assert.equal(url.searchParams.get('api-version'),'2024-10-01');
+    return {location, sku:{name:'S0'}};
+  });
+  const expected = {F0:'japanwest', S0:'japaneast'};
+  assert.deepEqual(await Promise.all([app.readSpeechRegions(),app.readSpeechRegions()]),[expected,expected]);
+  assert.equal(app.calls.length,2);
+  location = 'westus';
+  app.setTime(now+300_001);
+  assert.deepEqual(await app.readSpeechRegions(),{...expected, S0:'westus'});
+  assert.equal(app.calls.length,4);
 });
 
 for (const [tier, key, resource, seconds] of [
