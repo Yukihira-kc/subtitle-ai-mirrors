@@ -1,0 +1,23 @@
+#gemini-dictionary[hidden] { display: none; }
+#gemini-dictionary { position: relative; }
+#gemini-dictionary summary { width: fit-content; cursor: pointer; }
+.dictionary-form {
+  padding: 10px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.dictionary-form p { margin: 0 0 6px; }
+.dictionary-form label { display: block; }
+.dictionary-form input, .dictionary-form button { display: block; margin-top: 5px; max-width: 100%; }
+#dictionary-status { margin: 6px 0 0; }
+#dictionary-status:empty { display: none; }
+.desk-links .dictionary-form {
+  position: absolute; right: 0; z-index: 3;
+  width: min(23rem, 90vw); background: #fff; color: #193336;
+  border: 1px solid #839b96; border-radius: 6px;
+}
+.monitor-panel #gemini-dictionary { flex: none; margin-bottom: 6px; }
+.monitor-panel .dictionary-form { max-height: 32vh; overflow: auto; border: 1px solid #687583; }
+@media (max-width: 799px) {
+  .desk-links .dictionary-form { position: fixed; inset: auto 8px auto; width: auto; }
+}

@@ -1,9 +1,11 @@
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕連係｜音声付き分配卓</title>
-<link rel="stylesheet" href="/desk.css">
+<link rel="stylesheet" href="/desk.css?v=complete-ai">
+<link rel="stylesheet" href="/gemini-dictionary.css?v=1">
 <body>
 <header>
   <h1>字幕連係　分配卓</h1>
   <div class="desk-links">
+    <details id="gemini-dictionary" hidden></details>
     <nav id="roles" aria-label="担当切替"></nav>
     <details><summary>担当者の参加リンク</summary><div class="detail-body" id="invitations"></div></details>
     <button type="button" id="end-room">ルームを終了</button>
@@ -13,14 +15,22 @@
   <section class="recognition-settings" aria-label="音声認識の設定">
     <div class="control-row">
       <label>認識エンジン <select id="engine" autocomplete="off"><option value="vosk" selected>Vosk（無料練習）</option><option value="F0">Azure Speech（無料 F0）</option><option value="S0">Azure Speech（有料 S0）</option></select></label>
-      <details><summary>Voskの初回設定</summary><div class="detail-body">
-          <p><a href="/downloads/vosk-desktop.zip" download>Windows用Vosk起動ツールをダウンロード</a></p>
-          <p>デスクPCでZIPを展開します。以前セットアップしたフォルダーに展開すると、日本語モデルを再利用できます。</p>
-          <p>初回だけ Register-Vosk.cmd を実行します。「Vosk registration complete」と出たら［マイクで認識開始］を押し、Firefox にアプリを開く確認が出たら許可してください。</p>
+      <details><summary>Voskの設定・更新</summary><div class="detail-body">
+          <p><a href="/downloads/vosk-desktop.zip?v=complete-ai" download>Windows用Vosk起動ツールをダウンロード</a></p>
+          <p>デスクPCでZIPを展開します。更新する場合は起動中のVoskを終了し、以前のフォルダーに上書きすると日本語モデルを再利用できます。</p>
+          <p>初回と更新後に Register-Vosk.cmd を実行します。「Vosk registration complete」と出たら［マイクで認識開始］を押し、Firefox にアプリの起動やローカルネットワークへのアクセスの確認が出たら、許可してください。</p>
           <p>自動で開かない場合は、展開先のStart-Vosk.cmdで手動起動できます。</p>
         </div></details>
     </div>
-    <div class="control-row">
+    <div id="gemini-key-row" hidden style="margin-top:6px">
+      <div class="control-row">
+        <label>Gemini APIキー <input id="gemini-key" type="password" autocomplete="off" spellcheck="false"></label>
+        <a id="gemini-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Gemini APIキーを確認</a>
+        <button type="button" id="enable-gemini" disabled>Geminiを有効にする</button>
+        <span id="gemini-key-status" role="status"></span>
+      </div>
+    </div>
+    <div class="control-row" style="margin-top:6px">
       <label>入力機器 <select id="device"><option value="">Windows の既定</option></select></label>
       <button type="button" id="devices">機器を読み込む</button>
       <button type="button" id="start" class="primary">マイクで認識開始</button>
@@ -48,7 +58,7 @@
 
 const $=id=>document.getElementById(id);
 
-</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js"></script><script src="/room-client.js"></script><script src="/desk-room.js"></script><script src="/vosk-launch.js"></script><script>
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=complete-ai"></script><script src="/gemini-dictionary.js?v=desk-key-1"></script><script src="/desk-room.js?v=desk-key-2"></script><script src="/vosk-launch.js?v=complete-ai"></script><script>
 const editor=$('pool');
 let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
 function appendPending(){
@@ -85,8 +95,9 @@ $('cut').onclick=()=>{
  const ranges=marks.slice(offset,offset+text.length).filter(Boolean);
  const begin=ranges[0]?.begin,finish=ranges.at(-1)?.finish;
  const approx=!!ranges.length&&(marks.slice(length).some(r=>r&&r.begin===ranges.at(-1).begin)||boxes.some(b=>b.audio&&b.finish>begin));
- boxes.push({id:boxes.length+1,text,begin,finish,audio:ranges.length?clip(begin,finish,ranges[0].firstRun,ranges.at(-1).lastRun):null,approx,owner:null,sent:false});
- publishBox(boxes.at(-1));
+ const box={id:boxes.length+1,text,begin,finish,audio:ranges.length?clip(begin,finish,ranges[0].firstRun,ranges.at(-1).lastRun):null,approx,owner:null,sent:false};
+ if(!publishBox(box))return;
+ boxes.push(box);
  const a=Math.max(0,editor.selectionStart-length),b=Math.max(0,editor.selectionEnd-length);
  editor.setRangeText('',0,length,'start');editor.setSelectionRange(a,b);
  marks.splice(0,length);confirmedValue=editor.value;draw();editor.focus()

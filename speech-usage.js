@@ -8,18 +8,22 @@ const origins = new Set([
 ]);
 const management = 'https://management.azure.com';
 const metricName = 'AudioSecondsTranscribed';
+const tiers = ['F0', 'S0'];
 const hexHash = /^[a-f0-9]{64}$/;
 const idPattern = /^\/subscriptions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/resourceGroups\/([\p{L}\p{M}\p{N}_.()-]{1,90})\/providers\/Microsoft\.CognitiveServices\/accounts\/([a-z0-9][a-z0-9_.-]{1,63})$/iu;
 
-function configuration(env, tier) {
+function resourcePath(env, tier) {
   const parts = idPattern.exec(env['SPEECH_' + tier + '_RESOURCE_ID'] || '');
+  if (!parts || parts[2].endsWith('.')) return null;
+  return '/subscriptions/' + parts[1] + '/resourceGroups/' + encodeURIComponent(parts[2]) +
+    '/providers/Microsoft.CognitiveServices/accounts/' + parts[3];
+}
+
+function configuration(env, tier) {
+  const resource = resourcePath(env, tier);
   const hashes = (env['SPEECH_' + tier + '_KEY_HASHES'] || '').split(',').map(s => s.trim());
-  if (!parts || parts[2].endsWith('.') || !hashes.every(hash => hexHash.test(hash))) return null;
-  return {
-    resource: '/subscriptions/' + parts[1] + '/resourceGroups/' + encodeURIComponent(parts[2]) +
-      '/providers/Microsoft.CognitiveServices/accounts/' + parts[3],
-    hashes: hashes.map(hash => Buffer.from(hash, 'hex')),
-  };
+  if (!resource || !hashes.every(hash => hexHash.test(hash))) return null;
+  return {resource, hashes: hashes.map(hash => Buffer.from(hash, 'hex'))};
 }
 
 function authorized(header, hashes) {
@@ -54,9 +58,10 @@ function secondsUsed(response) {
 }
 
 module.exports = function installSpeechUsage(app, {env=process.env, fetchImpl=globalThis.fetch, clock=Date.now} = {}) {
-  const tiers = {F0:configuration(env, 'F0'), S0:configuration(env, 'S0')};
+  const usage = {F0:configuration(env, 'F0'), S0:configuration(env, 'S0')};
   const endpoint = env.IDENTITY_ENDPOINT, identityHeader = env.IDENTITY_HEADER;
   const cache = new Map();
+  const regionLookups = new Map();
 
   async function readJSON(url, headers, signal) {
     const res = await fetchImpl(url, {headers, signal, redirect:'error'});
@@ -64,15 +69,19 @@ module.exports = function installSpeechUsage(app, {env=process.env, fetchImpl=gl
     return res.json();
   }
 
-  async function query(tier, now, period) {
-    const signal = AbortSignal.timeout(9000);
+  async function managementHeaders(signal) {
     const identity = new URL(endpoint);
     identity.searchParams.set('api-version', '2019-08-01');
     identity.searchParams.set('resource', management + '/');
     const token = await readJSON(identity, {'X-IDENTITY-HEADER':identityHeader}, signal);
     if (!token.access_token) throw new Error('no management token');
-    const headers = {Authorization:'Bearer ' + token.access_token};
-    const resource = management + tiers[tier].resource;
+    return {Authorization:'Bearer ' + token.access_token};
+  }
+
+  async function query(tier, now, period) {
+    const signal = AbortSignal.timeout(9000);
+    const headers = await managementHeaders(signal);
+    const resource = management + usage[tier].resource;
     const checkedAt = new Date(now).toISOString();
     const periodStart = new Date(period).toISOString();
     const metrics = new URL(resource + '/providers/Microsoft.Insights/metrics');
@@ -82,6 +91,32 @@ module.exports = function installSpeechUsage(app, {env=process.env, fetchImpl=gl
     });
     const usedSeconds = secondsUsed(await readJSON(metrics, headers, signal));
     return {status:200, body:{usedSeconds, periodStart, checkedAt}};
+  }
+
+  async function readRegion(tier, resource) {
+    const signal = AbortSignal.timeout(3000);
+    const headers = await managementHeaders(signal);
+    const account = await readJSON(management + resource + '?api-version=2024-10-01', headers, signal);
+    if (account.sku?.name !== tier || typeof account.location !== 'string' || !/^[a-z][a-z0-9]+$/.test(account.location)) {
+      throw new Error('Invalid Speech account location');
+    }
+    return account.location;
+  }
+
+  function speechRegion(tier) {
+    const override = env['AZURE_SPEECH_' + tier + '_REGION']?.trim().toLowerCase();
+    if (override) return override;
+    const resource = resourcePath(env, tier);
+    if (!resource || !endpoint || !identityHeader) return null;
+    const stored = regionLookups.get(tier);
+    if (stored && clock() < stored.expires) return stored.result;
+    const entry = {expires:Infinity};
+    entry.result = readRegion(tier, resource).catch(() => null).then(region => {
+      entry.expires = clock() + (region ? 300_000 : 10_000);
+      return region;
+    });
+    regionLookups.set(tier, entry);
+    return entry.result;
   }
 
   function resultFor(tier) {
@@ -113,9 +148,15 @@ module.exports = function installSpeechUsage(app, {env=process.env, fetchImpl=gl
     if (req.method !== 'GET') return res.status(405).json({error:'unavailable'});
     const tier = req.params.tier;
     if (tier !== 'F0' && tier !== 'S0') return res.status(404).json({error:'not_configured'});
-    if (!tiers[tier] || !endpoint || !identityHeader) return res.status(503).json({error:'not_configured'});
-    if (!authorized(req.get('Authorization'), tiers[tier].hashes)) return res.status(401).json({error:'invalid_key'});
+    if (!usage[tier] || !endpoint || !identityHeader) return res.status(503).json({error:'not_configured'});
+    if (!authorized(req.get('Authorization'), usage[tier].hashes)) return res.status(401).json({error:'invalid_key'});
     const result = await resultFor(tier);
     return res.status(result.status).json(result.body);
   });
+  return async () => Object.fromEntries(await Promise.all(tiers.map(async tier => [tier, await speechRegion(tier)])));
+};
+
+module.exports.portalKeysUrl = function portalKeysUrl(env, tier) {
+  const resource = resourcePath(env, tier);
+  return resource ? 'https://portal.azure.com/#resource' + resource + '/cskeys' : null;
 };

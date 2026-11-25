@@ -2,12 +2,14 @@
   'use strict';
   const C=SubtitleConnection,$=id=>document.getElementById(id),params=new URLSearchParams(location.search);
   const directNext=['index.html','reviewer.html','output.html','desk.html','azure.html'].includes(params.get('next'))?params.get('next'):'index.html';
+  const completeAiOption=$('new-mode').querySelector('option[value="complete-ai"]');
   let selected=null,selection=0,busy=false;
+  const pinFields=['new-password','join-password','change-password'];
   function resetFields(id){$(id).querySelectorAll('input').forEach(input=>{input.value='';});}
   function clearEntryFields(){for(const id of ['create-form','join-form','password-form'])resetFields(id);}
   function normalizePassword(value){return value.replace(/[０-９]/g,ch=>String.fromCharCode(ch.charCodeAt(0)-0xfee0));}
   function normalizeField(input){input.value=normalizePassword(input.value);}
-  for(const id of ['new-password','join-password','change-password']){
+  for(const id of pinFields){
     const input=$(id);input.addEventListener('input',e=>{if(!e.isComposing)normalizeField(input);});input.addEventListener('compositionend',()=>normalizeField(input));
   }
   function takePassword(id){const input=$(id),value=normalizePassword(input.value);input.value='';return value;}
@@ -15,7 +17,7 @@
   // login-form submission and clear secrets before any request or navigation.
   function bindAction(id,handler){
     const group=$(id);
-    const run=()=>{if(busy)return;for(const input of group.querySelectorAll('input')){if(input.type==='password')normalizeField(input);if(!input.reportValidity())return;}handler();};
+    const run=()=>{if(busy)return;for(const input of group.querySelectorAll('input')){if(pinFields.includes(input.id))normalizeField(input);if(!input.reportValidity())return;}handler();};
     group.querySelector('[data-action]').onclick=run;
     group.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing&&e.keyCode!==229&&e.target.matches('input')){e.preventDefault();run();}});
   }
@@ -26,7 +28,20 @@
     $('status').textContent=message;$('status').classList.toggle('ok',ok);
     for(const [dialog,notice] of [['join-dialog','join-status'],['manage-dialog','manage-status']])if($(dialog).open)$(notice).textContent=message;
   }
-  function link(page,id){const u=new URL(page,location.href);u.search='';u.hash='';u.searchParams.set('room',id);if(page==='index.html' && ['A','B','C'].includes(params.get('role')))u.searchParams.set('role',params.get('role'));return u.href;}
+  function link(page,room){
+    const url=new URL(page,location.href),role=params.get('role');
+    url.search='';url.hash='';url.searchParams.set('room',room.id);
+    if(page==='index.html'&&room.mode!=='complete-ai'&&['A','B','C'].includes(role))url.searchParams.set('role',role);
+    return url.href;
+  }
+  function updateMode(){
+    const complete=$('new-mode').value==='complete-ai';
+    $('new-mode-help').textContent=complete
+      ? 'デスクの音声から字幕を作成します。Gemini APIキーはデスク画面で入力します。'
+      : '入力担当が原稿を送り、校閲から字幕を送出します。';
+  }
+  $('new-mode').addEventListener('change',updateMode);
+  updateMode();
   function dismiss(){
     ++selection;selected=null;
     for(const id of ['join-dialog','manage-dialog'])if($(id).open)$(id).close();
@@ -40,7 +55,7 @@
     if($('join-dialog').open)$('join-dialog').close();resetFields('join-form');
     if(purpose==='manage'){
       $('manage-title').textContent=room.name+' の管理';$('manage-status').textContent='';resetFields('password-form');$('manage-dialog').showModal();
-    }else{status('担当選択画面へ移動します。',true);location.assign(link(next,room.id));}
+    }else{status('担当選択画面へ移動します。',true);location.assign(link(next,room));}
   }
   async function select(id,purpose='enter',next='index.html'){
     const ticket=++selection;selected=null;status('ルームを確認中…');
@@ -51,17 +66,23 @@
       try{await C.api('/rooms/'+id+'/join',{method:'POST',token:C.token(id),body:'{}'});if(ticket===selection)proceed();return;}
       catch(e){if(ticket!==selection)return;if(e.status!==401&&e.status!==403)throw e;C.remember(id,'');}
     }
-    $('join-title').textContent=room.name;$('join-purpose').textContent=purpose==='manage'?'ルームを管理するにはパスワードで認証してください。':'認証後、A・B・Cの担当選択画面へ進みます。';
+    $('join-title').textContent=room.name;$('join-purpose').textContent=purpose==='manage'?'ルームを管理するにはパスワードで認証してください。':'入室パスワードで認証してください。';
     $('join-password').maxLength=room.pin4?4:128;if(room.pin4)$('join-password').setAttribute('pattern','[0-9]{4}');else $('join-password').removeAttribute('pattern');
     $('join-status').textContent='';$('join-password').value='';$('join-dialog').showModal();$('join-password').focus();
     $('status').textContent='パスワードを入力してください。';
   }
   async function refresh(){
-    const {rooms}=await C.api('/rooms');$('room-list').replaceChildren();
-    rooms.forEach(room=>{
+    const data=await C.api('/rooms');
+    completeAiOption.disabled=data.completeAiAvailable!==true;
+    if(completeAiOption.disabled && $('new-mode').value==='complete-ai'){
+      $('new-mode').value='standard';updateMode();
+    }
+    $('room-list').replaceChildren();
+    data.rooms.forEach(room=>{
       const row=document.createElement('div');row.className='room row';
       const name=document.createElement('div');name.className='room-name';name.textContent=room.name;
-      const hint=document.createElement('small');hint.textContent=room.practice?'フリー枠・パスワードなし':'パスワードが必要';name.append(hint);
+      const mode=room.mode==='complete-ai'?'完全AI版':'通常版';
+      const hint=document.createElement('small');hint.textContent=room.practice?'フリー枠・パスワードなし':mode+'・パスワードが必要';name.append(hint);
       const buttons=document.createElement('div');buttons.className='row';
       const enter=document.createElement('button');enter.type='button';enter.textContent='入室';enter.onclick=()=>action(()=>select(room.id));buttons.append(enter);
       if(!room.practice){const manage=document.createElement('button');manage.type='button';manage.textContent='管理';manage.onclick=()=>action(()=>select(room.id,'manage'));buttons.append(manage);}
@@ -72,10 +93,16 @@
   document.querySelectorAll('[data-close]').forEach(button=>button.onclick=dismiss);
   for(const id of ['join-dialog','manage-dialog'])$(id).addEventListener('cancel',e=>{e.preventDefault();dismiss();});
   $('refresh').onclick=()=>action(async()=>{await refresh();status('ルーム一覧を更新しました。',true);});
-  bindAction('create-form',()=>{const name=$('new-name').value,password=takePassword('new-password');action(async()=>{
-    const data=await C.api('/rooms',{method:'POST',body:JSON.stringify({name,password})});
-    C.remember(data.room.id,data.token);resetFields('create-form');selected={room:data.room,purpose:'enter',next:'index.html'};proceed();
-  });});
+  bindAction('create-form',()=>{
+    const name=$('new-name').value,mode=$('new-mode').value;
+    const password=takePassword('new-password');
+    action(async()=>{
+      // A server on the earlier release cannot mistake this for a standard room.
+      const path=mode==='complete-ai'?'/rooms/complete-ai':'/rooms';
+      const result=await C.api(path,{method:'POST',body:JSON.stringify({name,password})});
+      C.remember(result.room.id,result.token);resetFields('create-form');selected={room:result.room,purpose:'enter',next:'index.html'};proceed();
+    });
+  });
   bindAction('join-form',()=>{if(!selected)return;const {room}=selected,ticket=selection,password=takePassword('join-password');action(async()=>{
     const data=await C.api('/rooms/'+room.id+'/join',{method:'POST',body:JSON.stringify({password})});
     if(ticket!==selection)return;C.remember(room.id,data.token);proceed();

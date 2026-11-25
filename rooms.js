@@ -11,8 +11,11 @@ module.exports = function installRooms(app, io, createRuntime) {
   const rooms = new Map(), tokens = new Map(), limits = new Map();
   const TOKEN_MS = 7 * 24 * 60 * 60 * 1000;
   let hashJobs = 0, creating = 0;
-  function publicRoom(room) { return {id:room.id,name:room.name,practice:room.id==='practice',protected:room.id!=='practice',pin4:!!room.pin4}; }
-  function add(def) { const room={...def};room.runtime=createRuntime(room.id);rooms.set(room.id,room);return room; }
+  function publicRoom(room) { return {id:room.id,name:room.name,practice:room.id==='practice',protected:room.id!=='practice',pin4:!!room.pin4,mode:room.mode}; }
+  function add(def) {
+    const room={...def,mode:def.mode==='complete-ai'?'complete-ai':'standard'};
+    room.runtime=createRuntime(room.id,room.mode);rooms.set(room.id,room);return room;
+  }
   add({id:'practice',name:'練習用',generation:0});
   if (fs.existsSync(file)) {
     const saved=JSON.parse(fs.readFileSync(file,'utf8'));
@@ -23,7 +26,7 @@ module.exports = function installRooms(app, io, createRuntime) {
     }
   }
   function persist() {
-    const definitions=[...rooms.values()].filter(r=>r.id!=='practice').map(({id,name,salt,hash,generation,pin4})=>({id,name,salt,hash,generation,pin4:!!pin4}));
+    const definitions=[...rooms.values()].filter(r=>r.id!=='practice').map(({id,name,salt,hash,generation,pin4,mode})=>({id,name,salt,hash,generation,pin4:!!pin4,mode}));
     fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
     const temp=file+'.tmp';
     fs.writeFileSync(temp,JSON.stringify(definitions),{mode:0o600});fs.renameSync(temp,file);
@@ -62,11 +65,13 @@ module.exports = function installRooms(app, io, createRuntime) {
     if(req.method==='OPTIONS')return res.sendStatus(204);next();
   });
   app.use('/ai/api',require('express').json({limit:'8kb'}));
-  app.get('/ai/api/rooms',(req,res)=>res.json({rooms:[...rooms.values()].map(publicRoom)}));
+  app.get('/ai/api/rooms',(req,res)=>res.json({rooms:[...rooms.values()].map(publicRoom),completeAiAvailable:true}));
   app.get('/ai/api/rooms/:id',(req,res)=>{const room=rooms.get(req.params.id);if(!room)return res.status(404).json({error:'ルームがありません。'});res.json({room:publicRoom(room)});});
-  app.post('/ai/api/rooms',endpoint(async(req,res)=>{
+  app.post(['/ai/api/rooms','/ai/api/rooms/complete-ai'],endpoint(async(req,res)=>{
     const name=typeof req.body?.name==='string'?req.body.name.trim():'';
     const password=normalizePassword(req.body?.password);
+    const mode=req.path==='/ai/api/rooms/complete-ai'?'complete-ai':(req.body?.mode??'standard');
+    if(mode!=='standard'&&mode!=='complete-ai')return res.status(400).json({error:'ルームの種類を選んでください。'});
     if(!name||name.length>80||name==='練習用'||!validPassword(password))return res.status(400).json({error:'案件名は1〜80文字、パスワードは数字4桁で入力してください。「練習用」は常設ルーム名です。'});
     if([...rooms.values()].some(r=>r.name===name))return res.status(409).json({error:'同じ案件名のルームがあります。別の名前を付けてください。'});
     if(rooms.size+creating>=101)return res.status(409).json({error:'案件ルームは100件までです。終了したルームを削除してください。'});
@@ -75,7 +80,7 @@ module.exports = function installRooms(app, io, createRuntime) {
     try {
       const salt=crypto.randomBytes(16).toString('hex'),hash=await digest(password,salt);
       if([...rooms.values()].some(r=>r.name===name))return res.status(409).json({error:'同じ案件名のルームがあります。'});
-      const room=add({id:crypto.randomUUID(),name,salt,hash,generation:1,pin4:true});
+      const room=add({id:crypto.randomUUID(),name,salt,hash,generation:1,pin4:true,mode});
       try{persist();}catch(e){rooms.delete(room.id);room.runtime.dispose();throw e;}
       res.status(201).json({room:publicRoom(room),token:issue(room)});
     } finally {creating--;}

@@ -50,6 +50,7 @@ test('reloading a desk displays shared text and recovers ownership after the old
   const lifecycle = new EventTarget();
   const client = runInNewContext(source + '\n({roomReady, subscribeRoom, roomUpload});', {
     SubtitleConnection:{connect:() => refreshed},
+    location:{pathname:'/desk.html'},
     addEventListener:lifecycle.addEventListener.bind(lifecycle),
     setTimeout, clearTimeout,
   });

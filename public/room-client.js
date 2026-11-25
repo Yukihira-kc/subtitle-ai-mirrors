@@ -1,6 +1,7 @@
 'use strict';
 const deskSocket = SubtitleConnection.connect();
 let deskListener, currentDeskState, deskOnline = false;
+let deskMode = 'standard';
 let haveSnapshot = false, deskRetry, resolveRoomReady;
 let deskConnection = {type:'waiting',message:'デスクに接続中…'};
 const roomReady = new Promise(resolve => {resolveRoomReady=resolve;});
@@ -29,13 +30,15 @@ function retryDesk(action, socketId, message) {
   },1000);
 }
 function loadDeskState(socketId) {
-  deskSocket.timeout(5000).emit('deskState',{},(error,snapshot)=>{
+  const azureSpeech=location.pathname.endsWith('/azure.html');
+  deskSocket.timeout(5000).emit('deskState',{azureSpeech},(error,snapshot)=>{
     if(deskSocket.id!==socketId)return;
     if(error || !snapshot?.ok){
       retryDesk(loadDeskState,socketId,'音声認識テキストを再取得しています…');
       return;
     }
     currentDeskState=snapshot;
+    deskMode=snapshot.mode || 'standard';
     haveSnapshot=true;
     deskListener?.({type:'snapshot',state:snapshot});
     joinDesk(socketId);
@@ -49,6 +52,7 @@ function joinDesk(socketId) {
       retryDesk(joinDesk,socketId,message);
       return;
     }
+    deskMode=result.mode || deskMode;
     setDeskConnection('ready');
     resolveRoomReady();
     for(const ready of deskWaiters.splice(0))ready();
@@ -71,7 +75,7 @@ async function roomUpload(meta, blob) {
   await roomReady;
   if (!deskOnline) await new Promise(resolve=>deskWaiters.push(resolve));
   const result=await deskSocket.timeout(30000).emitWithAck('publishBox',{...meta,clip:blob?await blob.arrayBuffer():null});
-  if (!result.ok) throw Error(result.error);
+  if (!result.ok) throw Object.assign(Error(result.error), {retryable:result.retryable});
 }
 function roomLink(role) {
   const page={desk:'desk.html',A:'index.html',B:'index.html',reviewer:'reviewer.html'}[role];
