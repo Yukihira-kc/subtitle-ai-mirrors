@@ -18,6 +18,7 @@ window.ReviewerBoxes = {
       retrying:'自動再試行中', ready:'校正済み', 'audio-only':'音声のみ',
     };
     let enabled = false, lastId = null, taking = null;
+    let tailSpace = 0, alignedScroll = null;
     const takeButton = get('ai-take');
     const replayButton = get('ai-replay');
     const acquired = get('ai-acquired');
@@ -144,6 +145,7 @@ window.ReviewerBoxes = {
       card.play.disabled = !released || !box.audio;
       empty.hidden = true;
       if (followTail) list.scrollTop = list.scrollHeight;
+      if (!fromSnapshot && lastId && tailSpace) positionWorkingBox(false);
       if (!fromSnapshot) refreshControls();
     }
 
@@ -158,12 +160,45 @@ window.ReviewerBoxes = {
       replayButton.disabled = !actions.available() || !cards.get(lastId)?.box.audio;
     }
 
+    function positionWorkingBox(align) {
+      const card = cards.get(lastId);
+      if (!card || !list.clientHeight) return;
+      const viewportTop = list.getBoundingClientRect().top + list.clientTop;
+      const currentTop = card.row.getBoundingClientRect().top;
+      const previous = card.row.previousElementSibling;
+      let target = previous ? previous.getBoundingClientRect().top : currentTop;
+      // If the preceding box fills the viewport, retain its tail above the current heading.
+      if (card.top.getBoundingClientRect().bottom - target > list.clientHeight) {
+        target = Math.max(target,currentTop - Math.max(0,(list.clientHeight-card.top.offsetHeight)/2));
+      }
+      const scroll = Math.max(0,list.scrollTop + target - viewportTop);
+      // Reserve only the space missing below the last actual box, even after a reload.
+      const lastBottom = list.lastElementChild.getBoundingClientRect().bottom;
+      const needed = Math.max(0,Math.ceil(target + list.clientHeight - lastBottom));
+      if (needed !== tailSpace) {
+        tailSpace = needed;
+        list.style.setProperty('--review-tail-space',needed+'px');
+      }
+      if (align) {
+        list.scrollTop = scroll;
+        alignedScroll = list.scrollTop;
+      }
+    }
+
+    new ResizeObserver(() => {
+      // Preserve manual scrolling if the operator is looking at another box.
+      positionWorkingBox(alignedScroll !== null && Math.abs(list.scrollTop-alignedScroll) < 2);
+    }).observe(list);
+
     function setWorkingBox(id) {
       cards.get(lastId)?.row.removeAttribute('aria-current');
       workingLabel.remove();
       const card = cards.get(id);
       lastId = card?.box.id ?? null;
       if (!card) {
+        tailSpace = 0;
+        alignedScroll = null;
+        list.style.removeProperty('--review-tail-space');
         acquired.textContent = '';
         return;
       }
@@ -171,11 +206,7 @@ window.ReviewerBoxes = {
       card.top.prepend(workingLabel);
       acquired.textContent = '直近の取得：箱 '+id+(card.box.aiStatus==='audio-only'?'（音声のみ）':'');
 
-      // Move only this list. A tall card should open with its heading visible.
-      const top = list.getBoundingClientRect().top + list.clientTop;
-      const row = card.row.getBoundingClientRect();
-      if (row.top < top || row.height >= list.clientHeight) list.scrollTop += row.top - top;
-      else if (row.bottom > top + list.clientHeight) list.scrollTop += row.bottom - (top + list.clientHeight);
+      positionWorkingBox(true);
     }
 
     function disconnect() {

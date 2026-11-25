@@ -35,10 +35,14 @@ module.exports = function createReviewerDraft(session, raw) {
     let remainder = draft.text.replace(/\r\n?/g, '\n');
     if (action) {
       if (needsReview) return {ok:false, error:'引き継いだ原稿を確認してから送出してください。'};
-      if (!sentPrefixMatches(remainder, action.lines, action.consumed)) {
-        return {ok:false, error:'送出内容と編集欄の先頭が一致しません。'};
+      if (action.kind === 'send-all') {
+        remainder = '';
+      } else {
+        if (!sentPrefixMatches(remainder, action.lines, action.consumed)) {
+          return {ok:false, error:'送出内容と編集欄の先頭が一致しません。'};
+        }
+        remainder = remainder.slice(action.consumed);
       }
-      remainder = remainder.slice(action.consumed);
     }
     for (let i = offset; i < raw.length; i++) remainder = appendText(remainder, raw[i].text);
     text = remainder;

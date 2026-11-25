@@ -1,6 +1,9 @@
 const socket=SubtitleConnection.connect(),$=id=>document.getElementById(id),edit=$('edit');
 let settings={columns:15,mode:'page',keyColor:'#00ff00',fontSize:32,lineCount:2,captionFont:'noto-sans-jp',textColor:'#ffffff',outline:true,fontWeight:'normal'},online={},active=null;
 let throughMode=false;
+const sendAllOnF12=$('send-all-on-f12');
+let sendAllAvailable=false;
+sendAllOnF12.checked=false;
 const reviewDictionary=GeminiDictionary.create(socket);
 const aiReview=ReviewerBoxes.create(SubtitleConnection, {
   available:()=>ready && socket.connected && !composing && !pending && !blocked,
@@ -118,16 +121,26 @@ function prefixRange(end){const walker=document.createTreeWalker(edit,NodeFilter
 function editorText(){return String(edit.textContent||'').replace(/\r\n?/g,'\n');}
 function manualRows(text,count){const source=String(text),parts=source.split('\n'),rows=[];let end=0;for(let i=0;i<Math.min(count,parts.length);i++){const value=parts[i];if(!value&&i===0)break;end+=value.length+(i<parts.length-1?1:0);rows.push({text:value,end});}return rows;}
 function normalizeSent(text){const chars=[...String(text)];if(chars.length===settings.columns+1&&/[。、]$/.test(text))chars[chars.length-1]=chars[chars.length-1]==='。'?'｡':'､';return chars.join('');}
-function submit(count){if(!ready||pending||blocked||composing)return;const text=editorText();
-  if(text.startsWith('\n')){
-    const viewport=$('edit-scroll'),top=viewport.scrollTop,left=viewport.scrollLeft;
-    prefixRange(1).deleteContents();viewport.scrollTop=top;viewport.scrollLeft=left;
-    status('先頭の空行を削除しました');draftEdited();scheduleThrough();return;
+function submit(selection){
+  if(!ready||pending||blocked||composing)return;
+  const text=editorText();
+  let end, request;
+  if(selection==='all'){
+    if(!sendAllAvailable||!reviewDraft||!text.trim())return;
+    end=text.length;
+    request={id:operationId(),kind:'send-all',draft:draftPayload()};
+  }else{
+    if(text.startsWith('\n')){
+      const viewport=$('edit-scroll'),top=viewport.scrollTop,left=viewport.scrollLeft;
+      prefixRange(1).deleteContents();viewport.scrollTop=top;viewport.scrollLeft=left;
+      status('先頭の空行を削除しました');draftEdited();scheduleThrough();return;
+    }
+    const rows=manualRows(text,selection);if(!rows.length)return;
+    end=rows[rows.length-1].end;
+    request={id:operationId(),kind:'send',lines:rows.map(r=>r.text)};
+    if(reviewDraft){request.draft=draftPayload();request.consumed=end;}
   }
-  const rows=manualRows(text,count);if(!rows.length)return;
-  const end=rows[rows.length-1].end,range=prefixRange(end);
-  const request={id:operationId(),kind:'send',lines:rows.map(r=>r.text)};
-  if(reviewDraft){request.draft=draftPayload();request.consumed=end;}
+  const range=prefixRange(end);
   pending={request,range,source:range.toString(),generation:draftGeneration};save();buttons();transmit();
 }
 function transmit(){
@@ -141,7 +154,13 @@ function transmit(){
       setTimeout(()=>{if(pending===operation&&socket.id===connection)transmit();},1000);
       return;
     }
-    if(!result?.ok){pending=null;requireDraftReview(result?.error||'送出できませんでした');return;}
+    if(!result?.ok){
+      pending=null;
+      if(result?.code==='DRAFT_TOO_LARGE'){
+        status(result.error);buttons();save();queueDraftSave();scheduleThrough();
+      }else requireDraftReview(result?.error||'送出できませんでした');
+      return;
+    }
     if(composing){ackResult=result;return;}
     complete(result);
   });
@@ -183,8 +202,22 @@ document.addEventListener('keydown',e=>{
     if(!e.repeat){if(e.key==='F1')aiReview.takeNext();else aiReview.replay();}
     return;
   }
-  if(e.key==='F12'){e.preventDefault();if(!e.repeat&&!e.isComposing&&document.activeElement===edit)submit(e.shiftKey?2:1);}});
+  if(e.key==='F12'){
+    e.preventDefault();
+    if(e.repeat||e.isComposing)return;
+    const all=sendAllAvailable&&sendAllOnF12.checked&&!e.shiftKey;
+    if(document.activeElement===edit || (all && document.activeElement===sendAllOnF12)){
+      if(all)submit('all');
+      else submit(e.shiftKey?2:1);
+    }
+  }
+});
 $('send-one').onclick=()=>submit(1);$('send-two').onclick=()=>submit(2);
+function showF12Setting(){
+  $('send-all-setting').hidden=!sendAllAvailable;
+  $('send-one').textContent=sendAllAvailable&&sendAllOnF12.checked?'1行送出':'1行送出 F12';
+}
+sendAllOnF12.onchange=showF12Setting;
 function restoreDraft(result,sameRoomSession){
   const snapshot=result.reviewDraft;
   if(!snapshot){
@@ -231,6 +264,8 @@ function loadReviewer(result){
   }
   session=result.session;logBackup.start(session);
   aiReview.load(result.mode,result.aiBoxes||[],result.aiAcquiredId);
+  sendAllAvailable=aiReview.enabled&&result.sendAllAvailable===true;
+  showF12Setting();
   reviewDictionary.join(result.mode);
   restoreDraft(result,sameRoomSession);
   ready=true;

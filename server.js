@@ -160,6 +160,7 @@ let displayAuthority=null;
 function authority(){return outputs.values().next().value||reviewer;}
 function resetClock(){if(displayTimer)clearTimeout(displayTimer);displayTimer=null;displayStartedAt=0;displayAuthority=authority();broadcast().emit('caption',display);}
 const MIN_DISPLAY_MS=2000;
+const MAX_CAPTION_LINE_LENGTH=10000;
 function normalizeLine(text){
   const chars=[...String(text)];
   if(chars.length===settings.columns+1&&/[。、]$/.test(text)){
@@ -269,7 +270,7 @@ function connect(s){
     if(!admission.ok){if(typeof ack==='function')ack(admission);return;}
     if(ai)s.leave(deskChannel);
     reviewer=s.id;s.join(reviewChannel);if(authority()!==displayAuthority)resetClock();
-    if(typeof ack==='function')ack({...admission,session,mode,aiBoxes:ai?.list(),aiAcquiredId:ai?.acquiredId,raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
+    if(typeof ack==='function')ack({...admission,session,mode,sendAllAvailable:!!ai,aiBoxes:ai?.list(),aiAcquiredId:ai?.acquiredId,raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
   });
   s.on('takeAiReviewBox',(data,ack)=>{
     if(typeof ack!=='function')return;
@@ -310,12 +311,24 @@ function connect(s){
       clearCurrent();
       resultId=display.id;
     }
-    else if(request.kind==='send') {
-      if(!Array.isArray(request.lines)||request.lines.length<1||request.lines.length>2||request.lines.some(x=>typeof x!=='string'||x.length>10000))return reply({ok:false,error:'送出内容が不正です'});
+    else if(request.kind==='send'||request.kind==='send-all') {
+      let lines;
+      if(request.kind==='send-all'){
+        if(!ai||typeof request.draft?.text!=='string')return reply({ok:false,error:'完全AI版の校閲画面から全文を送出してください。'});
+        // Keep one operation within the existing size budget for two manual lines.
+        if(request.draft.text.length>2*MAX_CAPTION_LINE_LENGTH+1){
+          return reply({ok:false,code:'DRAFT_TOO_LARGE',error:'全文送出できる長さを超えています。原稿を分けて送出してください。'});
+        }
+        lines=request.draft.text.replace(/\r\n?/g,'\n').split('\n').filter(line=>line.trim());
+        if(!lines.length)return reply({ok:false,error:'送出する原稿がありません。'});
+      }else{
+        lines=request.lines;
+        if(!Array.isArray(lines)||lines.length<1||lines.length>2||lines.some(x=>typeof x!=='string'||x.length>MAX_CAPTION_LINE_LENGTH))return reply({ok:false,error:'送出内容が不正です'});
+      }
       const accepted=reviewerDraft.send(request);
       if(!accepted.ok)return reply(accepted);
       revision=accepted.revision;
-      const items=enqueueCaption(request.lines);
+      const items=enqueueCaption(lines);
       resultId=items[0].id;
     }
     else return reply({ok:false,error:'送出操作が不正です'});

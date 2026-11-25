@@ -299,6 +299,58 @@ test('再試行中の箱を追い越さず、校閲がF1で元の順に一度ず
   assert.deepEqual(await app.geminiCalls(),savedCalls);
 });
 
+test('全文送出は完全AI版の受信済み原稿を一度だけ順に送出する', {timeout:8000}, async t => {
+  const app = await startServer(t);
+  const [complete, standard] = await Promise.all([
+    app.room('全文送出の完全AI案件',{mode:'complete-ai'}),
+    app.room('通常版の案件'),
+  ]);
+  const [desk, editor, other] = await Promise.all([
+    app.connect(complete), app.connect(complete), app.connect(standard),
+  ]);
+  const [admission, standardAdmission] = await Promise.all([
+    call(editor,'joinReviewer',reviewer), call(other,'joinReviewer',reviewer),
+  ]);
+  assert.equal(admission.sendAllAvailable,true);
+  assert.equal(standardAdmission.sendAllAvailable,false);
+
+  const request = {
+    id:'complete-draft-f12',kind:'send-all',
+    draft:{...admission.reviewDraft,session:admission.session,
+      text:'\n一行目\n \n二行目\r\n三行目\n四行目\n五行目\n'},
+  };
+  const denied = await call(other,'captionAction',{...request,draft:{
+    ...standardAdmission.reviewDraft,session:standardAdmission.session,text:request.draft.text,
+  }});
+  assert.equal(denied.ok,false);
+  const empty = await call(editor,'captionAction',{...request,id:'empty-f12',
+    draft:{...request.draft,text:'\n \n'}});
+  assert.equal(empty.ok,false);
+  const tooLarge = await call(editor,'captionAction',{...request,id:'large-f12',
+    draft:{...request.draft,text:'あ\n'.repeat(10500)}});
+  assert.equal(tooLarge.code,'DRAFT_TOO_LARGE');
+
+  await joinGeminiDesk(desk);
+  const delivered = waitForBox(editor,box=>box.delivered);
+  const original = '送出操作と前後して届いた原稿';
+  assert.equal((await call(desk,'publishBox',{
+    key:'recording/1',version:1,text:original,clip:wave(250),forReview:true,
+  })).ok,true);
+  const box = await delivered;
+  assert.equal((await call(editor,'takeAiReviewBox',{id:box.id,session:admission.session})).ok,true);
+
+  const sent = await call(editor,'captionAction',request);
+  assert.equal(sent.ok,true);
+  assert.equal(sent.revision,admission.reviewDraft.revision+1);
+  assert.deepEqual(await call(editor,'captionAction',request),sent);
+
+  const updated = await call(editor,'joinReviewer',reviewer);
+  assert.deepEqual(updated.display.lines,['一行目','二行目']);
+  assert.deepEqual(updated.waiting.map(page=>page.lines),[['三行目','四行目'],['五行目']]);
+  assert.equal(updated.reviewDraft.text,'校正：'+original);
+  assert.equal(updated.reviewDraft.lastSendId,request.id);
+});
+
 test('二度の校閲失敗で原音だけの箱を順に渡し、その取得は編集欄へ追記しない', {timeout:10000}, async t => {
   const app = await startServer(t,{
     GEMINI_REVIEW_TIMEOUT_MS:'350',
