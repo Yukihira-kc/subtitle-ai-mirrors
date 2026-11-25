@@ -11,15 +11,18 @@ const metricName = 'AudioSecondsTranscribed';
 const hexHash = /^[a-f0-9]{64}$/;
 const idPattern = /^\/subscriptions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/resourceGroups\/([\p{L}\p{M}\p{N}_.()-]{1,90})\/providers\/Microsoft\.CognitiveServices\/accounts\/([a-z0-9][a-z0-9_.-]{1,63})$/iu;
 
-function configuration(env, tier) {
+function resourcePath(env, tier) {
   const parts = idPattern.exec(env['SPEECH_' + tier + '_RESOURCE_ID'] || '');
+  if (!parts || parts[2].endsWith('.')) return null;
+  return '/subscriptions/' + parts[1] + '/resourceGroups/' + encodeURIComponent(parts[2]) +
+    '/providers/Microsoft.CognitiveServices/accounts/' + parts[3];
+}
+
+function configuration(env, tier) {
+  const resource = resourcePath(env, tier);
   const hashes = (env['SPEECH_' + tier + '_KEY_HASHES'] || '').split(',').map(s => s.trim());
-  if (!parts || parts[2].endsWith('.') || !hashes.every(hash => hexHash.test(hash))) return null;
-  return {
-    resource: '/subscriptions/' + parts[1] + '/resourceGroups/' + encodeURIComponent(parts[2]) +
-      '/providers/Microsoft.CognitiveServices/accounts/' + parts[3],
-    hashes: hashes.map(hash => Buffer.from(hash, 'hex')),
-  };
+  if (!resource || !hashes.every(hash => hexHash.test(hash))) return null;
+  return {resource, hashes: hashes.map(hash => Buffer.from(hash, 'hex'))};
 }
 
 function authorized(header, hashes) {
@@ -118,4 +121,9 @@ module.exports = function installSpeechUsage(app, {env=process.env, fetchImpl=gl
     const result = await resultFor(tier);
     return res.status(result.status).json(result.body);
   });
+};
+
+module.exports.portalKeysUrl = function portalKeysUrl(env, tier) {
+  const resource = resourcePath(env, tier);
+  return resource ? 'https://portal.azure.com/#resource' + resource + '/cskeys' : null;
 };

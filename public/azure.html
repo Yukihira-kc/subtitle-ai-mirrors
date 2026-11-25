@@ -16,12 +16,14 @@
     <div class="control-row">
       <label>認識エンジン <select id="engine" autocomplete="off"><option value="vosk">Vosk（無料練習）</option><option value="F0" selected>Azure Speech（無料 F0）</option><option value="S0">Azure Speech（有料 S0）</option></select></label>
       <label>Speech キー <input id="key" type="password" autocomplete="off"></label>
+      <a id="speech-key-link" href="https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/SpeechServices" target="_blank" rel="noopener noreferrer">Azure APIキーを確認</a>
       <button type="button" id="clear-key" hidden>設定済みキーを消去</button>
       <label><input id="tier-confirm" type="checkbox" autocomplete="off"> <span id="tier-confirm-label">AzureでこのキーのリソースがFree F0であることを確認した</span></label>
     </div>
     <div id="gemini-key-row" hidden style="margin-top:6px">
       <div class="control-row">
         <label>Gemini APIキー <input id="gemini-key" type="password" autocomplete="off" spellcheck="false"></label>
+        <a id="gemini-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Gemini APIキーを確認</a>
         <button type="button" id="enable-gemini" disabled>Geminiを有効にする</button>
         <span id="gemini-key-status" role="status"></span>
       </div>
@@ -112,6 +114,13 @@ const credentials = {
  F0: {region:'', key:'', configured:false},
  S0: {region:'', key:'', configured:false}
 };
+const speechKeyLink=$('speech-key-link');
+const speechPortalList=speechKeyLink.href;
+let speechKeysByTier={};
+function showSpeechKeyLink(){
+ speechKeyLink.href=speechKeysByTier[selectedTier] || speechPortalList;
+ speechKeyLink.textContent=selectedTier+'のAPIキーを確認';
+}
 let selectedTier='F0', confirmedCredentials=null;
 if(location.hash==='#select-s0'){
  const target=new URL(location.href);target.hash='';
@@ -152,7 +161,7 @@ function clearConfirmation(){
 function showTier(){
  const paid=selectedTier==='S0', name=paid?'Standard S0':'Free F0';
  $('engine').value=selectedTier;
- showKey();
+ showKey();showSpeechKeyLink();
  $('tier-confirm-label').textContent='Azureでこのキーのリソースが'+name+'であることを確認した';
  $('start').textContent=paid?'S0で有料認識を開始':'F0で認識開始';
  $('diag').textContent=paid?'Standard S0のキーで認識すると、音声時間に応じて課金されます。':'Free F0のキーで無料枠を使用します。';
@@ -168,6 +177,8 @@ $('engine').onchange=()=>{
  clearConfirmation();showTier();status('');
 };
 function configureSpeechRegions(snapshot){
+ speechKeysByTier=snapshot.azureSpeechKeyLinks || {};
+ showSpeechKeyLink();
  for(const [tier,fields] of Object.entries(credentials)){
   const region=snapshot.azureSpeechRegions?.[tier] || 'japaneast';
   if(fields.region && fields.region!==region){

@@ -7,7 +7,8 @@ const app = express();
 const server = http.createServer(app);
 app.get('/healthz', (_, res) => res.json({app:'subtitle-ai-mirrors'}));
 app.get('/', (_, res) => res.redirect('/rooms.html'));
-require('./speech-usage')(app);
+const installSpeechUsage = require('./speech-usage');
+installSpeechUsage(app);
 app.use(express.static(path.join(__dirname, 'public')));
 const Pagination=require('./pagination.js');
 const createReviewerDraft=require('./reviewer-draft');
@@ -18,6 +19,10 @@ const aiSchedule=createAiQueue();
 const azureSpeechRegions={
   F0:process.env.AZURE_SPEECH_F0_REGION?.trim().toLowerCase() || 'japaneast',
   S0:process.env.AZURE_SPEECH_S0_REGION?.trim().toLowerCase() || 'japaneast',
+};
+const azureSpeechKeyLinks={
+  F0:installSpeechUsage.portalKeysUrl(process.env,'F0'),
+  S0:installSpeechUsage.portalKeysUrl(process.env,'S0'),
 };
 const io=new Server(server,{path:'/ai/socket.io',maxHttpBufferSize:9*1024*1024,cors:{origin:'*'}});
 function createRoomRuntime(roomId,mode){
@@ -214,7 +219,7 @@ function connect(s){
     if(typeof ack!=='function')return;
     if(ai && s.id===reviewer)return ack({ok:false,error:'校閲担当として接続中です。'});
     if(ai)s.join(deskChannel);
-    ack({ok:true,mode,boxes:boxes.list(),settings,raw,azureSpeechRegions});
+    ack({ok:true,mode,boxes:boxes.list(),settings,raw,azureSpeechRegions,azureSpeechKeyLinks:ai?azureSpeechKeyLinks:undefined});
   });
   snapshot(s);s.emit('version','v29.5');s.emit('presence',getPresence());s.emit('active',active);
   s.on('joinOutput',()=>{outputs.add(s.id);if(authority()!==displayAuthority)resetClock();else s.emit('caption',display);});
