@@ -75,7 +75,7 @@ async function uploadDictionary(files, text, signal) {
 }
 
 function createGeminiReview(apiKey, { client } = {}) {
-  if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error('GEMINI_API_KEY が設定されていません。');
+  if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error('Gemini APIキーを入力してください。');
   const ai = client ?? new GoogleGenAI({ apiKey: apiKey.trim(), vertexai: false });
 
   async function review({ audio, text, signal, dictionary }) {
@@ -129,9 +129,17 @@ function createGeminiReview(apiKey, { client } = {}) {
     return corrected.trim();
   }
 
-  review.registerDictionary = async text => {
+  review.validateKey = async cancel => {
+    const timeout = AbortSignal.timeout(8000);
+    const signal = cancel ? AbortSignal.any([cancel,timeout]) : timeout;
+    await ai.models.get({model,config:{abortSignal:signal,httpOptions:{timeout:8000,retryOptions:{attempts:1}}}});
+  };
+
+  review.registerDictionary = async (text, cancel) => {
     if (typeof text !== 'string' || !text.trim()) throw new TypeError('登録する辞書が空です。');
-    const signal = AbortSignal.timeout(30000);
+    const deadline = AbortSignal.timeout(30000);
+    const signal = cancel ? AbortSignal.any([cancel,deadline]) : deadline;
+    signal.throwIfAborted();
     let onTimeout;
     const timeout = new Promise((_,reject) => {
       onTimeout = () => reject(new Error('Geminiの辞書登録が時間内に完了しませんでした。'));

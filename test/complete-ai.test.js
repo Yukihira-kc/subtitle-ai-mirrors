@@ -12,7 +12,9 @@ const {setTimeout:delay} = require('node:timers/promises');
 const {io} = require('socket.io-client');
 
 const root = path.join(__dirname, '..');
-const accessCode = 'test-complete-room-access';
+const deskKey = 'AIza'+'a'.repeat(35);
+const secondRoomKey = 'AIza'+'b'.repeat(35);
+const successorKey = 'AIza'+'c'.repeat(35);
 const reviewer = {draftProtocol:1, clientId:'complete-ai-test-reviewer'};
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -22,11 +24,13 @@ const {appendFileSync} = require('node:fs');
 const {setTimeout} = require('node:timers/promises');
 const {createHash} = require('node:crypto');
 const originalLoad = Module._load;
-function createGeminiReview() {
+let uploads = 0;
+function createGeminiReview(key) {
+  const keyDigest = createHash('sha256').update(key).digest('hex');
   const attempts = new Map();
   const review=async ({audio, text, signal, dictionary}) => {
     const digest = createHash('sha256').update(audio).digest('hex');
-    appendFileSync(process.env.TEST_GEMINI_CALLS, JSON.stringify({text,digest,dictionaryUri:dictionary?.uri})+'\\n');
+    appendFileSync(process.env.TEST_GEMINI_CALLS, JSON.stringify({text,digest,keyDigest,dictionaryUri:dictionary?.uri})+'\\n');
     const attempt = (attempts.get(text)||0)+1;
     attempts.set(text,attempt);
     if (text.startsWith('二度停止する原文')) return new Promise(()=>{});
@@ -43,16 +47,19 @@ function createGeminiReview() {
       throw Object.assign(new Error('Temporary fixture error'),{status:503});
     return '校正：'+text;
   };
-  let uploads = 0;
+  review.validateKey = async signal => {
+    signal?.throwIfAborted();
+    if (key==='AIza'+'z'.repeat(35)) throw new Error('Provider rejected: '+key);
+  };
   review.registerDictionary = async text => {
     appendFileSync(process.env.TEST_GEMINI_DICTIONARIES,text+'\\n');
-    if (text.includes('アップロード失敗')) throw new Error('Provider unavailable');
+    if (text.includes('アップロード失敗')) throw new Error('Provider unavailable: '+key);
     return {uri:'https://mock.invalid/files/'+(++uploads),expiresAt:Date.now()+86400000};
   };
   return review;
 }
 Module._load = function(request, parent, isMain) {
-  if (/^\\.\\/gemini-review(?:\\.js)?$/.test(request) && parent?.filename.endsWith('/server.js'))
+  if (/^\\.\\/gemini-review(?:\\.js)?$/.test(request))
     return {createGeminiReview};
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -87,10 +94,10 @@ async function startServer(t, settings = {}) {
   const [banner] = await once(child.stdout, 'data', {signal:AbortSignal.timeout(4000)})
     .catch(error => {throw new Error('The local server did not start: '+stderr, {cause:error});});
   const url = 'http://127.0.0.1:'+String(banner).match(/port (\d+)/)[1];
-  async function room(name, {mode, code} = {}) {
+  async function room(name, {mode} = {}) {
     const response = await fetch(url+'/ai/api/rooms', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,password:'1234',mode,accessCode:code}),
+      body:JSON.stringify({name,password:'1234',mode}),
     });
     return {status:response.status, ...await response.json()};
   }
@@ -115,7 +122,11 @@ async function startServer(t, settings = {}) {
       await delay(20);
     }
   }
-  return {url,room,socket,connect,geminiCalls,waitForStaleResult,readDictionaries:()=>readFile(dictionaries,'utf8')};
+  return {
+    url,room,socket,connect,geminiCalls,waitForStaleResult,
+    readDictionaries:()=>readFile(dictionaries,'utf8'),
+    readRoomStore:()=>readFile(path.join(directory,'rooms.json'),'utf8'),
+  };
 }
 
 function wave(sample) {
@@ -131,28 +142,43 @@ function wave(sample) {
 
 const call = (socket, event, payload) => socket.timeout(2000).emitWithAck(event,payload);
 const authorization = token => ({Authorization:'Bearer '+token});
+async function joinGeminiDesk(socket, key = deskKey) {
+  assert.equal((await call(socket,'joinDesk',{})).ok,true);
+  assert.equal((await call(socket,'setGeminiKey',{key})).ok,true);
+}
 async function waitForBox(socket, match) {
   for await (const [card] of on(socket,'aiReviewBox',{signal:AbortSignal.timeout(4000)})) {
     if (match(card)) return card;
   }
 }
 
-test('完全AIモードはサーバーの設定がそろっている場合に限り作成できる', {timeout:8000}, async t => {
-  const app = await startServer(t, {COMPLETE_AI_ACCESS_CODE:accessCode});
-  const complete = await app.room('完全AIルーム', {mode:'complete-ai',code:accessCode});
-  assert.equal(complete.status,503);
+test('完全AIルームはキーなしで作成でき、校閲にはデスクのキーが必要', {timeout:8000}, async t => {
+  const app = await startServer(t);
+  const complete = await app.room('完全AIルーム', {mode:'complete-ai'});
+  assert.equal(complete.status,201);
+  assert.equal(complete.room.protected,true);
+  const listing = await fetch(app.url+'/ai/api/rooms').then(response=>response.json());
+  assert.notEqual(listing.completeAiAvailable,false);
   const standard = await app.room('通常ルーム');
   assert.equal(standard.status,201);
   assert.equal(standard.room.mode,'standard');
+  const [desk, editor] = await Promise.all([app.connect(complete),app.connect(complete)]);
+  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  assert.equal((await call(editor,'joinReviewer',reviewer)).ok,true);
+  assert.equal((await call(editor,'setGeminiKey',{key:deskKey})).ok,false);
+  const box = {key:'unconfigured/1',version:1,text:'未設定の原文',clip:wave(250),forReview:true};
+  const rejected = await call(desk,'publishBox',box);
+  assert.equal(rejected.ok,false);
+  assert.equal(rejected.retryable,false);
+  assert.equal((await call(desk,'registerGeminiDictionary',{name:'IME.txt',file:Buffer.from('よみ\t氏名')})).ok,false);
   assert.deepEqual(await app.geminiCalls(),[]);
 });
 
 test('再試行中の箱を追い越さず、校閲がF1で元の順に一度ずつ取得する', {timeout:12000}, async t => {
   const app = await startServer(t,{
-    GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode,GEMINI_REVIEW_TIMEOUT_MS:'350',
+    GEMINI_REVIEW_TIMEOUT_MS:'350',
   });
-  assert.equal((await app.room('認可されていない完全AI案件',{mode:'complete-ai',code:'wrong'})).status,403);
-  const complete = await app.room('完全AI案件',{mode:'complete-ai',code:accessCode});
+  const complete = await app.room('完全AI案件',{mode:'complete-ai'});
   const standard = await app.room('通常案件');
   assert.equal(complete.status,201);
   assert.equal(complete.room.mode,'complete-ai');
@@ -170,7 +196,7 @@ test('再試行中の箱を追い越さず、校閲がF1で元の順に一度ず
   assert.equal(admission.aiAcquiredId,0);
   assert.deepEqual(admission.aiBoxes,[]);
   assert.deepEqual(admission.raw,[]);
-  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  await joinGeminiDesk(desk);
 
   const forwarded = [];
   const publication = new Set();
@@ -211,9 +237,9 @@ test('再試行中の箱を追い越さず、校閲がF1で元の順に一度ず
   assert.deepEqual(pending.aiBoxes.map(box=>box.text),['校正：'+first.text,'校正：'+second.text]);
   const savedCalls = await app.geminiCalls();
   assert.deepEqual(savedCalls,[
-    {text:first.text,digest:sha256(firstAudio)},
-    {text:second.text,digest:sha256(secondAudio)},
-    {text:first.text,digest:sha256(firstAudio)},
+    {text:first.text,digest:sha256(firstAudio),keyDigest:sha256(deskKey)},
+    {text:second.text,digest:sha256(secondAudio),keyDigest:sha256(deskKey)},
+    {text:first.text,digest:sha256(firstAudio),keyDigest:sha256(deskKey)},
   ]);
   assert.equal((await acquire(desk,1)).ok,false);
   assert.equal((await acquire(editor,1,'previous-session')).ok,false);
@@ -270,13 +296,13 @@ test('再試行中の箱を追い越さず、校閲がF1で元の順に一度ず
 
 test('二度の校閲失敗で原音だけの箱を順に渡し、その取得は編集欄へ追記しない', {timeout:10000}, async t => {
   const app = await startServer(t,{
-    GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode,GEMINI_REVIEW_TIMEOUT_MS:'350',
+    GEMINI_REVIEW_TIMEOUT_MS:'350',
   });
-  const complete = await app.room('失敗時の完全AI案件',{mode:'complete-ai',code:accessCode});
+  const complete = await app.room('失敗時の完全AI案件',{mode:'complete-ai'});
   assert.equal(complete.status,201);
   const [desk, editor] = await Promise.all([app.connect(complete),app.connect(complete)]);
   assert.equal((await call(desk,'deskState',{})).ok,true);
-  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  await joinGeminiDesk(desk);
   const joined = await call(editor,'joinReviewer',reviewer);
   assert.equal(joined.ok,true);
   const firstAudio = wave(160), secondAudio = wave(270), thirdAudio = wave(-380);
@@ -346,12 +372,12 @@ test('二度の校閲失敗で原音だけの箱を順に渡し、その取得�
 
 test('すべての枠が二度時間切れでも、待機中の箱は空き枠から新たに校正できる', {timeout:10000}, async t => {
   const app = await startServer(t,{
-    GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode,GEMINI_REVIEW_TIMEOUT_MS:'500',
+    GEMINI_REVIEW_TIMEOUT_MS:'500',
   });
-  const complete = await app.room('枠待ちの完全AI案件',{mode:'complete-ai',code:accessCode});
+  const complete = await app.room('枠待ちの完全AI案件',{mode:'complete-ai'});
   assert.equal(complete.status,201);
   const [desk, editor] = await Promise.all([app.connect(complete),app.connect(complete)]);
-  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  await joinGeminiDesk(desk);
   assert.equal((await call(editor,'joinReviewer',reviewer)).ok,true);
 
   const audio = wave(290);
@@ -377,13 +403,11 @@ test('すべての枠が二度時間切れでも、待機中の箱は空き枠�
 });
 
 test('デスクと校閲が事前登録したIME辞書を同じ部屋の箱が参照する', {timeout:12000}, async t => {
-  const app = await startServer(t,{
-    GEMINI_API_KEY:'fake-api-key',COMPLETE_AI_ACCESS_CODE:accessCode,
-  });
-  const complete = await app.room('辞書のある完全AI案件',{mode:'complete-ai',code:accessCode});
+  const app = await startServer(t);
+  const complete = await app.room('辞書のある完全AI案件',{mode:'complete-ai'});
   const [desk, editor, observer] = await Promise.all([app.connect(complete),app.connect(complete),app.connect(complete)]);
   assert.equal((await call(desk,'deskState',{})).ok,true);
-  assert.equal((await call(desk,'joinDesk',{})).ok,true);
+  await joinGeminiDesk(desk);
   assert.equal((await call(editor,'joinReviewer',reviewer)).ok,true);
   assert.deepEqual(await call(editor,'getGeminiDictionary',{}),{ok:true,dictionary:null});
 
@@ -420,8 +444,94 @@ test('デスクと校閲が事前登録したIME辞書を同じ部屋の箱が�
   await third;
   assert.equal((await app.geminiCalls()).at(-1).dictionaryUri,'https://mock.invalid/files/2');
 
-  const independent = await app.room('別の完全AI案件',{mode:'complete-ai',code:accessCode});
+  const independent = await app.room('別の完全AI案件',{mode:'complete-ai'});
   const otherDesk = await app.connect(independent);
   await call(otherDesk,'joinDesk',{});
   assert.deepEqual(await call(otherDesk,'getGeminiDictionary',{}),{ok:true,dictionary:null});
+});
+
+test('キーはデスクの接続とルームごとに分かれ、受付済みの箱は送信時の辞書とキーで再試行する', {timeout:12000}, async t => {
+  const app = await startServer(t,{GEMINI_REVIEW_TIMEOUT_MS:'550'});
+  const one = await app.room('キー交代の完全AI案件',{mode:'complete-ai'});
+  const two = await app.room('別キーの完全AI案件',{mode:'complete-ai'});
+  assert.equal(one.status,201);
+  assert.equal(two.status,201);
+  const [deskOne, editorOne, deskTwo, editorTwo] = await Promise.all([
+    app.connect(one),app.connect(one),app.connect(two),app.connect(two),
+  ]);
+  const notices = [];
+  editorOne.onAny((event,...args)=>notices.push([event,...args]));
+  editorTwo.onAny((event,...args)=>notices.push([event,...args]));
+  assert.equal((await call(editorOne,'joinReviewer',reviewer)).ok,true);
+  assert.equal((await call(editorTwo,'joinReviewer',reviewer)).ok,true);
+  assert.equal((await call(deskOne,'setGeminiKey',{key:deskKey})).ok,false);
+  await joinGeminiDesk(deskOne);
+  await joinGeminiDesk(deskTwo,secondRoomKey);
+
+  const oldDict = await call(deskOne,'registerGeminiDictionary',{
+    name:'以前の辞書.txt',file:Buffer.from('まえ\t旧辞書'),
+  });
+  assert.equal(oldDict.ok,true);
+  assert.deepEqual(await call(deskTwo,'getGeminiDictionary',{}),{ok:true,dictionary:null});
+  const otherDict = await call(deskTwo,'registerGeminiDictionary',{
+    name:'別案件.txt',file:Buffer.from('べつ\t別案件の辞書'),
+  });
+  assert.equal(otherDict.ok,true);
+
+  const audio = wave(700);
+  function publish(socket,id,text) {
+    return call(socket,'publishBox',{key:'keys/'+id,version:1,text,clip:audio,forReview:true});
+  }
+  const oldText = '再試行で復旧する原文';
+  const processing = waitForBox(editorOne,card=>card.id===1 && card.aiStatus==='processing');
+  const readyOne = waitForBox(editorOne,card=>card.id===2 && card.delivered);
+  const readyTwo = waitForBox(editorTwo,card=>card.id===1 && card.delivered);
+  assert.equal((await publish(deskOne,1,oldText)).ok,true);
+  await processing;
+  assert.equal((await publish(deskTwo,1,'別ルームの録音')).ok,true);
+  deskOne.disconnect();
+  const successor = await app.connect(one);
+  assert.equal((await call(successor,'joinDesk',{})).ok,true);
+  const withoutKey = await publish(successor,2,'交代後の録音');
+  assert.equal(withoutKey.ok,false);
+  assert.equal(withoutKey.retryable,false);
+
+  const invalidKey = 'AIza'+'z'.repeat(35);
+  const rejected = await call(successor,'setGeminiKey',{key:invalidKey});
+  assert.equal(rejected.ok,false);
+  assert.ok(!JSON.stringify(rejected).includes(invalidKey));
+  assert.deepEqual((await call(editorOne,'getGeminiDictionary',{})).dictionary,oldDict.dictionary);
+
+  const reused = await call(successor,'setGeminiKey',{key:deskKey});
+  assert.equal(reused.ok,true);
+  assert.deepEqual((await call(successor,'getGeminiDictionary',{})).dictionary,oldDict.dictionary);
+  const dictionaryCleared = once(editorOne,'geminiDictionary',{signal:AbortSignal.timeout(2000)});
+  const changed = await call(successor,'setGeminiKey',{key:successorKey});
+  assert.equal(changed.ok,true);
+  assert.deepEqual((await dictionaryCleared)[0],null);
+  assert.deepEqual(await call(editorOne,'getGeminiDictionary',{}),{ok:true,dictionary:null});
+  assert.deepEqual((await call(editorTwo,'getGeminiDictionary',{})).dictionary,otherDict.dictionary);
+  const newDict = await call(successor,'registerGeminiDictionary',{
+    name:'交代後.txt',file:Buffer.from('こうたい\t交代の辞書'),
+  });
+  assert.equal(newDict.ok,true);
+  assert.equal((await publish(successor,2,'交代後の録音')).ok,true);
+  await Promise.all([readyOne,readyTwo]);
+  await app.waitForStaleResult(oldText);
+
+  const calls = await app.geminiCalls();
+  const oldCall = {text:oldText,digest:sha256(audio),keyDigest:sha256(deskKey),dictionaryUri:'https://mock.invalid/files/1'};
+  const otherCall = {text:'別ルームの録音',digest:sha256(audio),keyDigest:sha256(secondRoomKey),dictionaryUri:'https://mock.invalid/files/2'};
+  const newCall = {text:'交代後の録音',digest:sha256(audio),keyDigest:sha256(successorKey),dictionaryUri:'https://mock.invalid/files/3'};
+  assert.deepEqual(calls.filter(entry=>entry.text===oldText),[oldCall,oldCall]);
+  assert.deepEqual(calls.filter(entry=>entry.text!==oldText),[otherCall,newCall]);
+
+  const roomList = await fetch(app.url+'/ai/api/rooms').then(response=>response.json());
+  const metadata = JSON.stringify([roomList,await call(successor,'deskState',{}),await call(editorOne,'joinReviewer',reviewer),
+    await call(editorTwo,'joinReviewer',reviewer),reused,changed,oldDict,otherDict,newDict,notices]);
+  const saved = await app.readRoomStore();
+  for (const secret of [deskKey,secondRoomKey,successorKey]) {
+    assert.ok(!metadata.includes(secret) && !metadata.includes(sha256(secret)));
+    assert.ok(!saved.includes(secret) && !saved.includes(sha256(secret)));
+  }
 });

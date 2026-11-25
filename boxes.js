@@ -5,7 +5,7 @@ const totalLimit = 96 * 1024 * 1024;
 let bytesInUse = 0;
 const replayClips = new Map();
 
-module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
+module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDesk}={}) {
   const byId = new Map(), byKey = new Map();
   let desk = null;
   function metadata(box) {
@@ -24,6 +24,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
   return {
     list() { return [...byId.values()].map(metadata); },
     held,
+    get deskId() { return desk; },
     isDesk(socketId) { return desk === socketId; },
     finish(box) { if (box) { box.sent = true; release(box); update(box); } },
     refresh(id) { const box=byId.get(id);if(box)update(box); },
@@ -39,6 +40,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
     connect(socket) {
       socket.on('joinDesk', (_, reply) => {
         if (typeof reply !== 'function') return;
+        if (canJoinDesk && !canJoinDesk(socket)) return reply({ok:false,error:'校閲担当として接続中です。'});
         if (desk && desk !== socket.id) return reply({ok:false,error:'デスクは接続中です'});
         desk = socket.id;
         reply({ok:true,mode});
@@ -57,7 +59,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai}={}) {
         if (ai) {
           // A retry of the same desk action must not order a second inference.
           if (box) return reply({ok:true});
-          if (!ai.available) return reply({ok:false,retryable:false,error:'完全AI版のGemini設定が済んでいません。'});
+          if (!ai.available) return reply({ok:false,retryable:false,error:'デスクでGemini APIキーを設定してください。'});
           if (forReview!==true || !clip || !text.trim())
             return reply({ok:false,retryable:false,error:'箱の原稿と対応する録音が必要です。'});
         }

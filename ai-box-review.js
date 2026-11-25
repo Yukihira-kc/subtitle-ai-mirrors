@@ -4,14 +4,14 @@ const defaultDeadlineMs = 4500;
 
 // Limit simultaneous requests across all rooms. Desk publication does not wait
 // for inference, and a slow request does not prevent the next one from starting.
-function createAiQueue(review) {
+function createAiQueue() {
   const pending = [];
   let running = 0;
   function drain() {
     while (running < 3 && pending.length) {
       const job = pending.shift();
       running++;
-      Promise.resolve().then(() => job(review)).finally(() => { running--; drain(); });
+      Promise.resolve().then(job).finally(() => { running--; drain(); });
     }
   }
   return job => { pending.push(job); drain(); };
@@ -32,7 +32,7 @@ async function reviewUntilAbort(review, request) {
   }
 }
 
-function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay, dictionary, timeoutMs=defaultDeadlineMs}) {
+function createAiBoxReview({schedule, provider, clip, notify, appendToDraft, retainReplay, dictionary, timeoutMs=defaultDeadlineMs}) {
   const entries = new Map();
   const lifetime = new AbortController();
   const deadlineMs = Number.isSafeInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 60_000
@@ -93,14 +93,15 @@ function createAiBoxReview({schedule, clip, notify, appendToDraft, retainReplay,
   }
 
   return {
-    available:!!schedule,
+    get available() { return !!provider(); },
     get acquiredId() { return acquiredId; },
     accept({id,version,approx,text}) {
       const entry = {id,version,approx,original:text,corrected:'',error:'',state:'queued',attempt:0,delivered:false,
         dictionary:dictionary?.()};
       entries.set(id,entry);
       update(entry);
-      schedule(review => run(entry,review));
+      const review = provider();
+      schedule(() => run(entry,review));
     },
     list() { return [...entries.values()].map(card); },
     status(id) { const entry = entries.get(id); return entry && status(entry); },

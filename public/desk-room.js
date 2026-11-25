@@ -9,6 +9,66 @@ const recordingKey = crypto.randomUUID();
 let uploading=false, retryError='', deskFeedback='';
 let rejectedUpload=null;
 const sleep = ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let savedGeminiKey='', geminiConnection=null, settingGemini=false;
+
+function geminiAvailable(){
+  return deskMode!=='complete-ai' || (deskConnected && geminiConnection!==null && geminiConnection===deskSocket.id);
+}
+function updateGeminiControls(){
+  const input=$('gemini-key');
+  const available=deskConnected && deskMode==='complete-ai' && !settingGemini;
+  input.disabled=!available;
+  $('enable-gemini').disabled=!available || !(input.value.trim() || (savedGeminiKey && !geminiAvailable()));
+}
+async function enableGemini(reconnect=false){
+  if(!deskConnected || deskMode!=='complete-ai' || settingGemini)return;
+  const input=$('gemini-key'),notice=$('gemini-key-status');
+  const key=reconnect?savedGeminiKey:(input.value.trim() || savedGeminiKey);
+  if(!key)return;
+  const connection=deskSocket.id;
+  settingGemini=true;
+  updateGeminiControls();
+  notice.textContent=reconnect?'Geminiに再接続中…':'Geminiキーを設定中…';
+  try{
+    const reply=await deskSocket.timeout(45000).emitWithAck('setGeminiKey',{key});
+    if(!deskConnected || deskSocket.id!==connection)return;
+    if(!reply?.ok){
+      let error=String(reply?.error || 'Geminiキーを設定できませんでした。');
+      for(const secret of [key,savedGeminiKey])if(secret)error=error.split(secret).join('［キー］');
+      notice.textContent=error+(geminiAvailable()?' 直前の設定を使用中です。':'');
+      return;
+    }
+    geminiConnection=connection;
+    savedGeminiKey=key;
+    if(!reconnect)input.value='';
+    input.placeholder='設定済み（変更は再入力）';
+    notice.textContent='Geminiは有効です。';
+    uploadBoxes();
+  }catch{
+    if(deskSocket.id===connection)notice.textContent='Geminiキー設定の応答を確認できません。もう一度お試しください。';
+  }finally{
+    if(deskSocket.id===connection){settingGemini=false;updateGeminiControls();updateDeskControls();}
+  }
+}
+function syncGeminiConnection(){
+  if(!deskConnected){
+    geminiConnection=null;settingGemini=false;
+    if(deskMode==='complete-ai')$('gemini-key-status').textContent='デスクの接続を待っています。';
+  }else if(deskMode==='complete-ai' && !geminiAvailable()){
+    if(savedGeminiKey)enableGemini(true);
+    else $('gemini-key-status').textContent='認識開始前にGeminiキーを設定してください。';
+  }
+  updateGeminiControls();
+}
+$('gemini-key').oninput=updateGeminiControls;
+$('enable-gemini').onclick=()=>enableGemini();
+$('gemini-key').onkeydown=event=>{
+  if(event.key==='Enter' && !event.isComposing){event.preventDefault();$('enable-gemini').click();}
+};
+addEventListener('pagehide',()=>{
+  savedGeminiKey='';geminiConnection=null;
+  $('gemini-key').value='';$('gemini-key').placeholder='';
+});
 
 function showDelivery(){
   $('delivery').textContent = deskConnectionMessage || retryError || deskFeedback || (pendingBoxes.size?'音声認識テキストに送信中':'');
@@ -57,6 +117,8 @@ async function uploadBoxes(){
   uploading=true;
   while(pendingBoxes.size){
     const [key,box]=pendingBoxes.entries().next().value;
+    if(box.forReview && !geminiAvailable())break;
+    const connection=deskSocket.id;
     const {version,text,approx}=box;
     const meta={key,version,text,approx:!!approx};
     if(box.forReview)meta.forReview=true;
@@ -68,6 +130,7 @@ async function uploadBoxes(){
       else {pendingBoxes.delete(key);pendingBoxes.set(key,box)}
       retryError='';
     }catch(error){
+      if(box.forReview && (!geminiAvailable() || connection!==deskSocket.id))continue;
       if(box.forReview && error.retryable===false){
         rejectedUpload={box,message:error.message};
         retryError='';
@@ -117,15 +180,17 @@ function applyDeskState(change){
   }else if(change.type==='ready' || change.type==='waiting'){
     deskConnected=change.type==='ready';
     deskConnectionMessage=change.message;
+    syncGeminiConnection();
     updateDeskControls();showDelivery();
     if(deskConnected){configureDeskLinks();deskDictionary.join(deskMode);}
   }
 }
 function draw(){
-  $('cut').disabled=!deskConnected||composing||!editor.value.trim();
+  $('cut').disabled=!deskConnected||!geminiAvailable()||composing||!editor.value.trim();
 }
 function updateDeskControls(){
-  $('start').disabled=$('engine').disabled=!deskConnected||deskRecognitionBusy;
+  $('engine').disabled=!deskConnected||deskRecognitionBusy;
+  $('start').disabled=$('engine').disabled||!geminiAvailable();
   draw();
 }
 function setDeskRecognitionBusy(busy){
@@ -156,6 +221,7 @@ function configureDeskLinks(){
  displayedMode=deskMode;
  if(SubtitleConnection.roomId==='practice')$('end-room').textContent='ルームを退出';
  const ai=deskMode==='complete-ai';
+ $('gemini-key-row').hidden=!ai;
  $('roles').replaceChildren();$('invitations').replaceChildren();
  $('distributed').classList.toggle('ai-distribution',ai);
  $('boxes-title').textContent=ai?'AI校閲の進行':'音声認識テキスト';
@@ -174,7 +240,12 @@ function configureDeskLinks(){
    row.append(name,address,copy);$('invitations').append(row);
  }
 }
-function watchDesk(){subscribeRoom(applyDeskState);}
+function watchDesk(onSnapshot){
+ subscribeRoom(change=>{
+   if(change.type==='snapshot')onSnapshot?.(change.state);
+   applyDeskState(change);
+ });
+}
 addEventListener('pageshow',event=>{if(event.persisted)switchingEngine=false;});
 addEventListener('beforeunload',event=>{
  if(!switchingEngine && (pendingBoxes.size || document.getElementById('pool')?.value.trim())){

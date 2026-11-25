@@ -3,7 +3,6 @@
   const C=SubtitleConnection,$=id=>document.getElementById(id),params=new URLSearchParams(location.search);
   const directNext=['index.html','reviewer.html','output.html','desk.html','azure.html'].includes(params.get('next'))?params.get('next'):'index.html';
   let selected=null,selection=0,busy=false;
-  let completeAiAvailable,completeAiRequiresCode=false;
   const pinFields=['new-password','join-password','change-password'];
   function resetFields(id){$(id).querySelectorAll('input').forEach(input=>{input.value='';});}
   function clearEntryFields(){for(const id of ['create-form','join-form','password-form'])resetFields(id);}
@@ -37,15 +36,11 @@
   function updateMode(){
     const complete=$('new-mode').value==='complete-ai';
     $('new-mode-help').textContent=complete
-      ? completeAiAvailable ? 'デスクの音声から字幕を作成します。校閲画面で確認できます。' : 'この環境では完全AI版を利用できません。'
+      ? 'デスクの音声から字幕を作成します。Gemini APIキーはデスク画面で入力します。'
       : '入力担当が原稿を送り、校閲から字幕を送出します。';
-    const requiresCode=complete&&completeAiAvailable===true&&completeAiRequiresCode;
-    const code=$('new-access-code');
-    $('complete-ai-code').hidden=!requiresCode;
-    code.required=requiresCode;code.disabled=!requiresCode;
-    if(!requiresCode)code.value='';
   }
   $('new-mode').addEventListener('change',updateMode);
+  updateMode();
   function dismiss(){
     ++selection;selected=null;
     for(const id of ['join-dialog','manage-dialog'])if($(id).open)$(id).close();
@@ -77,9 +72,6 @@
   }
   async function refresh(){
     const data=await C.api('/rooms');
-    completeAiAvailable=data.completeAiAvailable;
-    completeAiRequiresCode=data.completeAiRequiresCode===true;
-    updateMode();
     $('room-list').replaceChildren();
     data.rooms.forEach(room=>{
       const row=document.createElement('div');row.className='room row';
@@ -98,14 +90,8 @@
   $('refresh').onclick=()=>action(async()=>{await refresh();status('ルーム一覧を更新しました。',true);});
   bindAction('create-form',()=>{
     const name=$('new-name').value,mode=$('new-mode').value;
-    if(mode==='complete-ai'&&typeof completeAiAvailable!=='boolean'){
-      status('この環境では完全AI版を利用できません。');
-      return;
-    }
-    const password=takePassword('new-password'),code=$('new-access-code');
+    const password=takePassword('new-password');
     const data={name,password,mode};
-    if(!code.disabled)data.accessCode=code.value;
-    code.value='';
     action(async()=>{
       const result=await C.api('/rooms',{method:'POST',body:JSON.stringify(data)});
       C.remember(result.room.id,result.token);resetFields('create-form');selected={room:result.room,purpose:'enter',next:'index.html'};proceed();

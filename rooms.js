@@ -6,7 +6,7 @@ const {promisify} = require('util');
 const scrypt = promisify(crypto.scrypt);
 
 // Only room definitions and salted password hashes are stored. Live captions stay in memory.
-module.exports = function installRooms(app, io, createRuntime, completeAiAccessCode) {
+module.exports = function installRooms(app, io, createRuntime) {
   const file = process.env.ROOM_STORE_PATH || path.join(__dirname, '.data', 'rooms.json');
   const rooms = new Map(), tokens = new Map(), limits = new Map();
   const TOKEN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -65,9 +65,7 @@ module.exports = function installRooms(app, io, createRuntime, completeAiAccessC
     if(req.method==='OPTIONS')return res.sendStatus(204);next();
   });
   app.use('/ai/api',require('express').json({limit:'8kb'}));
-  const accessDigest = value => crypto.createHash('sha256').update(value).digest();
-  const completeAiDigest = completeAiAccessCode ? accessDigest(completeAiAccessCode) : null;
-  app.get('/ai/api/rooms',(req,res)=>res.json({rooms:[...rooms.values()].map(publicRoom),completeAiAvailable:!!completeAiDigest,completeAiRequiresCode:true}));
+  app.get('/ai/api/rooms',(req,res)=>res.json({rooms:[...rooms.values()].map(publicRoom),completeAiAvailable:true}));
   app.get('/ai/api/rooms/:id',(req,res)=>{const room=rooms.get(req.params.id);if(!room)return res.status(404).json({error:'ルームがありません。'});res.json({room:publicRoom(room)});});
   app.post('/ai/api/rooms',endpoint(async(req,res)=>{
     const name=typeof req.body?.name==='string'?req.body.name.trim():'';
@@ -78,12 +76,6 @@ module.exports = function installRooms(app, io, createRuntime, completeAiAccessC
     if([...rooms.values()].some(r=>r.name===name))return res.status(409).json({error:'同じ案件名のルームがあります。別の名前を付けてください。'});
     if(rooms.size+creating>=101)return res.status(409).json({error:'案件ルームは100件までです。終了したルームを削除してください。'});
     if(limited('create:'+req.ip,10,3600000))return res.status(429).json({error:'作成が続いています。時間をおいて再試行してください。'});
-    if(mode==='complete-ai'){
-      if(!completeAiDigest)return res.status(503).json({error:'完全AI版のGemini設定が済んでいません。'});
-      const code=req.body?.accessCode;
-      if(typeof code!=='string'||!crypto.timingSafeEqual(accessDigest(code.trim()),completeAiDigest))
-        return res.status(403).json({error:'完全AI版の作成コードを確認してください。'});
-    }
     creating++;
     try {
       const salt=crypto.randomBytes(16).toString('hex'),hash=await digest(password,salt);

@@ -10,7 +10,7 @@ window.GeminiDictionary = {
         <label>辞書ファイル（TXT・TSV、8 MiBまで）
           <input id="dictionary-file" type="file" accept=".txt,.tsv" aria-describedby="dictionary-format">
         </label>
-        <p id="dictionary-format">1行につき、よみと語句をタブで区切ります。</p>
+        <p id="dictionary-format">デスクでGeminiを有効にしてから登録します。よみ・語句はタブ区切りで、品詞・コメント付きのIME辞書も使えます。</p>
         <button id="dictionary-register" type="button" disabled>辞書を登録</button>
         <p id="dictionary-status" role="status"></p>
       </div>`;

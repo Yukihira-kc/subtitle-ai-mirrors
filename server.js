@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const {createHash}=require('node:crypto');
 const http = require('http');
 const {Server} = require('socket.io');
 const app = express();
@@ -12,29 +13,69 @@ const Pagination=require('./pagination.js');
 const createReviewerDraft=require('./reviewer-draft');
 const {createAiQueue,createAiBoxReview}=require('./ai-box-review');
 const {parseDictionary}=require('./gemini-dictionary');
-const geminiKey=process.env.GEMINI_API_KEY?.trim();
-const aiRoomCode=process.env.COMPLETE_AI_ACCESS_CODE?.trim();
-const geminiReview=geminiKey&&aiRoomCode?.length>=16
-  ? require('./gemini-review').createGeminiReview(geminiKey)
-  : null;
-const aiSchedule=geminiReview?createAiQueue(geminiReview):null;
+const {createGeminiReview}=require('./gemini-review');
+const aiSchedule=createAiQueue();
+const azureSpeechRegions={
+  F0:process.env.AZURE_SPEECH_F0_REGION?.trim().toLowerCase() || 'japaneast',
+  S0:process.env.AZURE_SPEECH_S0_REGION?.trim().toLowerCase() || 'japaneast',
+};
 const io=new Server(server,{path:'/ai/socket.io',maxHttpBufferSize:9*1024*1024,cors:{origin:'*'}});
 function createRoomRuntime(roomId,mode){
 const channel='room:'+roomId,reviewChannel=channel+':reviewers',deskChannel=channel+':desk';
 const broadcast=()=>io.to(channel);
-let dictionary=null, dictionaryRegistration=false, disposed=false;
+let provider=null, checkingKey=null, dictionary=null, dictionaryRegistration=null, disposed=false;
+function stopDictionaryUpload(){
+  dictionaryRegistration?.abort();
+  dictionaryRegistration=null;
+}
+function clearDeskCredentials(){
+  checkingKey?.abort();
+  checkingKey=null;
+  stopDictionaryUpload();
+  provider=null;
+}
+async function setGeminiKey(socket,data,ack){
+  if(typeof ack!=='function')return;
+  if(!ai || !boxes.isDesk(socket.id))return ack({ok:false,error:'完全AI版のデスクとして入室してください。'});
+  const key=typeof data?.key==='string'?data.key.trim():'';
+  if(!key || key.length>2048 || /\s/.test(key))return ack({ok:false,error:'Gemini APIキーを確認してください。'});
+  checkingKey?.abort();
+  const check=checkingKey=new AbortController();
+  try {
+    const review=createGeminiReview(key);
+    await review.validateKey(check.signal);
+    if(check.signal.aborted || disposed || !boxes.isDesk(socket.id))return ack({ok:false,error:'デスクでキーを再設定してください。'});
+    const keyHash=createHash('sha256').update(key).digest('hex');
+    if(provider?.keyHash!==keyHash)stopDictionaryUpload();
+    provider={review,keyHash};
+    if(dictionary && dictionary.keyHash!==keyHash){
+      dictionary=null;
+      notifyDictionary(null);
+    }
+    ack({ok:true});
+  } catch {
+    ack({ok:false,error:'Gemini APIキーを確認できませんでした。キーと接続を確認してください。'});
+  } finally {
+    if(checkingKey===check)checkingKey=null;
+  }
+}
 function dictionaryState(){
   if(!dictionary)return null;
   const {name,count,expiresAt}=dictionary;
   return {name,count,expiresAt};
+}
+function notifyDictionary(metadata){
+  const recipients=boxes.deskId?[reviewChannel,boxes.deskId]:[reviewChannel];
+  io.to(recipients).emit('geminiDictionary',metadata);
 }
 function isDictionaryEditor(socket){
   return !!ai && (socket.id===reviewer || boxes.isDesk(socket.id));
 }
 async function registerDictionary(socket,data,ack){
   if(typeof ack!=='function')return;
-  if(!isDictionaryEditor(socket) || !geminiReview?.registerDictionary)
+  if(!isDictionaryEditor(socket))
     return ack({ok:false,error:'完全AI版のデスクまたは校閲画面から辞書を登録してください。'});
+  if(!provider)return ack({ok:false,error:'デスクでGemini APIキーを設定してから登録してください。'});
   if(dictionaryRegistration)return ack({ok:false,error:'別の辞書を登録中です。完了後にもう一度お試しください。'});
   const name=typeof data?.name==='string'?path.basename(data.name.replaceAll('\\','/')).trim():'';
   if(!name || name.length>255)return ack({ok:false,error:'辞書ファイル名を確認してください。'});
@@ -44,23 +85,26 @@ async function registerDictionary(socket,data,ack){
   } catch (error) {
     return ack({ok:false,error:error.message});
   }
-  dictionaryRegistration=true;
+  const {review,keyHash}=provider;
+  const registration=dictionaryRegistration=new AbortController();
   try {
-    const uploaded=await geminiReview.registerDictionary(parsed.text);
-    if(disposed)return;
-    dictionary={...uploaded,name,count:parsed.count};
+    const uploaded=await review.registerDictionary(parsed.text,registration.signal);
+    if(disposed || registration.signal.aborted || provider?.keyHash!==keyHash || !isDictionaryEditor(socket))
+      return ack({ok:false,error:'登録中に接続が変わりました。辞書を再登録してください。'});
+    dictionary={...uploaded,keyHash,name,count:parsed.count};
     const metadata=dictionaryState();
-    io.to([deskChannel,reviewChannel]).emit('geminiDictionary',metadata);
+    notifyDictionary(metadata);
     ack({ok:true,dictionary:metadata});
   } catch {
     ack({ok:false,error:'Geminiに辞書を登録できませんでした。もう一度お試しください。'});
   } finally {
-    dictionaryRegistration=false;
+    if(dictionaryRegistration===registration)dictionaryRegistration=null;
   }
 }
 const ai=mode==='complete-ai'?createAiBoxReview({
   schedule:aiSchedule,
   timeoutMs:Number(process.env.GEMINI_REVIEW_TIMEOUT_MS),
+  provider:()=>provider?.review,
   dictionary:()=>dictionary,
   clip:(id,version)=>boxes.clip(id,version),
   notify:card=>{boxes.refresh(card.id);io.to(reviewChannel).emit('aiReviewBox',card);},
@@ -71,7 +115,7 @@ const ai=mode==='complete-ai'?createAiBoxReview({
   },
   retainReplay:id=>boxes.retainReplay(id),
 }):null;
-const boxes = require('./boxes')(ai ? ()=>io.to(deskChannel) : broadcast,{mode,ai});
+const boxes = require('./boxes')(ai ? ()=>io.to(deskChannel) : broadcast,{mode,ai,canJoinDesk:s=>!ai || s.id!==reviewer});
 const receipts = new Map();
 let columnsInitialized=false;
 const order=['A','B','C'], inputs={A:'',B:'',C:''};
@@ -157,6 +201,8 @@ function next(after){const p=presence(),start=order.indexOf(after);return [1,2,3
 function snapshot(s){s.emit('settings',settings);s.emit('caption',display);}
 function connect(s){
   boxes.connect(s);
+  s.on('setGeminiKey',(data,ack)=>setGeminiKey(s,data,ack));
+  s.on('disconnecting',()=>{if(boxes.isDesk(s.id))clearDeskCredentials();});
   s.on('getGeminiDictionary',(_,ack)=>{
     if(typeof ack!=='function')return;
     if(!isDictionaryEditor(s))return ack({ok:false,error:'完全AI版の担当として接続してください。'});
@@ -167,7 +213,7 @@ function connect(s){
     if(typeof ack!=='function')return;
     if(ai && s.id===reviewer)return ack({ok:false,error:'校閲担当として接続中です。'});
     if(ai)s.join(deskChannel);
-    ack({ok:true,mode,boxes:boxes.list(),settings,raw});
+    ack({ok:true,mode,boxes:boxes.list(),settings,raw,azureSpeechRegions});
   });
   snapshot(s);s.emit('version','v29.5');s.emit('presence',getPresence());s.emit('active',active);
   s.on('joinOutput',()=>{outputs.add(s.id);if(authority()!==displayAuthority)resetClock();else s.emit('caption',display);});
@@ -213,6 +259,7 @@ function connect(s){
     receipts.set(receipt,true);ack({ok:true});
   });
   s.on('joinReviewer',(options,ack)=>{
+    if(ai && boxes.isDesk(s.id)){if(typeof ack==='function')ack({ok:false,error:'デスクとして接続中です。'});return;}
     if(s.data.role){if(typeof ack==='function')ack({ok:false,error:'入力担当として接続中です'});return;}
     if(reviewer&&reviewer!==s.id){if(typeof ack==='function')ack({ok:false,code:'reviewer_busy',error:'校閲者は既に接続中です'});return;}
     const admission=reviewerDraft.join(options);
@@ -275,8 +322,8 @@ function connect(s){
   });
   s.on('disconnect',()=>{outputs.delete(s.id);if(reviewer===s.id)reviewer=null;if(authority()!==displayAuthority)resetClock();removeSocketFromRole(s);});
 }
-return {connect,clip:boxes.clip,dispose(){disposed=true;dictionary=null;ai?.dispose();boxes.dispose();receipts.clear();if(displayTimer)clearTimeout(displayTimer);waiting.length=0;raw.length=0;history.length=0;requests.clear();}};
+return {connect,clip:boxes.clip,dispose(){disposed=true;clearDeskCredentials();dictionary=null;ai?.dispose();boxes.dispose();receipts.clear();if(displayTimer)clearTimeout(displayTimer);waiting.length=0;raw.length=0;history.length=0;requests.clear();}};
 }
-require('./rooms')(app,io,createRoomRuntime,aiSchedule?aiRoomCode:null);
+require('./rooms')(app,io,createRoomRuntime);
 const PORT=Number(process.env.PORT??3001);
 server.listen(PORT,'0.0.0.0',()=>console.log('subtitle AI mirror on port '+server.address().port));
