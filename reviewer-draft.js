@@ -56,6 +56,7 @@ module.exports = function createReviewerDraft(session, raw) {
   }
 
   return {
+    get text() { return text; },
     append(item) {
       raw.push(item);
       inputOffsets.set(item.id, raw.length);

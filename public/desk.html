@@ -58,7 +58,7 @@
 
 const $=id=>document.getElementById(id);
 
-</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=complete-ai"></script><script src="/gemini-dictionary.js?v=desk-key-1"></script><script src="/desk-room.js?v=desk-key-2"></script><script src="/vosk-launch.js?v=complete-ai"></script><script>
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=comparison-1"></script><script src="/gemini-dictionary.js?v=desk-key-1"></script><script src="/desk-room.js?v=comparison-1"></script><script src="/vosk-launch.js?v=complete-ai"></script><script>
 const editor=$('pool');
 let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
 function appendPending(){
@@ -79,6 +79,10 @@ function syncEdit(){
  while(b>a&&c>a&&old[b-1]===value[c-1]){b--;c--}
  const replaced=marks.slice(a,b).filter(Boolean);
  const range=replaced.length?{...replaced[0],finish:replaced.at(-1).finish,lastRun:replaced.at(-1).lastRun}:null;
+ if(comparisonLogAvailable && range){
+  delete range.recognitionSource;
+  range.recognitionSources=recognitionSources(replaced);
+ }
  const insertion=Array.from({length:c-a},(_,i)=>value[a+i]==='\n'?null:range);
  marks=marks.slice(0,a).concat(insertion,marks.slice(b));confirmedValue=value;draw()
 }
@@ -96,7 +100,7 @@ $('cut').onclick=()=>{
  const begin=ranges[0]?.begin,finish=ranges.at(-1)?.finish;
  const approx=!!ranges.length&&(marks.slice(length).some(r=>r&&r.begin===ranges.at(-1).begin)||boxes.some(b=>b.audio&&b.finish>begin));
  const box={id:boxes.length+1,text,begin,finish,audio:ranges.length?clip(begin,finish,ranges[0].firstRun,ranges.at(-1).lastRun):null,approx,owner:null,sent:false};
- if(!publishBox(box))return;
+ if(!publishBox(box,ranges))return;
  boxes.push(box);
  const a=Math.max(0,editor.selectionStart-length),b=Math.max(0,editor.selectionEnd-length);
  editor.setRangeText('',0,length,'start');editor.setSelectionRange(a,b);
@@ -146,18 +150,41 @@ function encodeAudio(batch){
  return btoa(parts.join(''))
 }
 let lastWordEnd=-1,hasUtterance=false;
+let voskSource=null;
 function updateTranscript(r){
  const final='text' in r;
- for(const w of (final?r.result:r.partial_result)||[]){
+ const words=(final?r.result:r.partial_result)||[];
+ if(comparisonLogAvailable){
+  const text=final?r.text:r.partial;
+  if(final)recordFinalRecognition(text,'vosk');
+  if(text && words.length){
+   let cursor=0;
+   const spans=[];
+   for(const w of words){
+    const from=text.indexOf(w.word,cursor);
+    if(from<0 || !w.word.length)continue;
+    cursor=from+w.word.length;
+    spans.push({from,to:cursor,begin:run.begin+w.start,finish:run.begin+w.end});
+   }
+   if(spans.length){
+    voskSource ||= {engine:'vosk'};
+    Object.assign(voskSource,{text,partial:!final,spans});
+   }
+  }
+ }
+ for(const w of words){
   // Timed words already available to the editor may have been edited or sent.
   if((w.start+w.end)/2<=lastWordEnd)continue;
-  pending.push({text:w.word,range:{begin:run.begin+w.start,finish:run.begin+w.end,firstRun:run,lastRun:run}});
+  const range={begin:run.begin+w.start,finish:run.begin+w.end,firstRun:run,lastRun:run};
+  if(voskSource)range.recognitionSource=voskSource;
+  pending.push({text:w.word,range});
   lastWordEnd=w.end;hasUtterance=true
  }
  if(final&&hasUtterance){
   if((pending.length||editor.value)&&!(pending.at(-1)?.text||editor.value).endsWith('\n'))pending.push({text:'\n',range:null});
   hasUtterance=false
  }
+ if(final)voskSource=null;
  appendPending()
 }
 function releaseInput(){
@@ -195,7 +222,7 @@ async function finish(){
 }
 async function startCapture(file){
  if($('start').disabled)return;
- failed=false;seq=0;lastWordEnd=-1;hasUtterance=false;
+ failed=false;seq=0;lastWordEnd=-1;hasUtterance=false;voskSource=null;
  setDeskRecognitionBusy(true);$('status').textContent='入力を準備中';
  try{
   context=new AudioContext();

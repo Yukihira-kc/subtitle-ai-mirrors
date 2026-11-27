@@ -13,6 +13,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const Pagination=require('./pagination.js');
 const createReviewerDraft=require('./reviewer-draft');
 const {createAiQueue,createAiBoxReview}=require('./ai-box-review');
+const {createComparisonLog}=require('./comparison-log');
 const {parseDictionary}=require('./gemini-dictionary');
 const {createGeminiReview}=require('./gemini-review');
 const aiSchedule=createAiQueue();
@@ -102,6 +103,7 @@ async function registerDictionary(socket,data,ack){
     if(dictionaryRegistration===registration)dictionaryRegistration=null;
   }
 }
+const comparison=mode==='complete-ai'?createComparisonLog():null;
 const ai=mode==='complete-ai'?createAiBoxReview({
   schedule:aiSchedule,
   timeoutMs:Number(process.env.GEMINI_REVIEW_TIMEOUT_MS),
@@ -114,6 +116,7 @@ const ai=mode==='complete-ai'?createAiBoxReview({
     reviewerDraft.append(item);
     io.to(reviewChannel).emit('reviewItem',item);
   },
+  onTake:(id,audioOnly)=>comparison.acquire(id,raw.at(-1)?.id??0,audioOnly),
   retainReplay:id=>boxes.retainReplay(id),
 }):null;
 const boxes = require('./boxes')(ai ? ()=>io.to(deskChannel) : broadcast,{
@@ -205,6 +208,26 @@ function next(after){const p=presence(),start=order.indexOf(after);return [1,2,3
 function snapshot(s){s.emit('settings',settings);s.emit('caption',display);}
 function connect(s){
   boxes.connect(s);
+  s.on('comparisonRecognition',(data,ack)=>{
+    if(typeof ack!=='function')return;
+    if(!comparison || !boxes.isDesk(s.id))return ack({ok:false,error:'完全AI版のデスクとして入室してください。'});
+    ack(comparison.recordRecognition(data));
+  });
+  function saveDraft(draft){
+    if(s.id!==reviewer)return {ok:false,error:'校閲者として未接続です'};
+    const result=reviewerDraft.save(draft);
+    if(result.ok)comparison?.save(draft);
+    return result;
+  }
+  s.on('getComparisonLog',(data,ack)=>{
+    if(typeof ack!=='function')return;
+    if(!comparison || s.id!==reviewer)return ack({ok:false,error:'完全AI版の校閲担当として入室してください。'});
+    if(data?.draft!==undefined){
+      const saved=saveDraft(data.draft);
+      if(!saved.ok)return ack(saved);
+    }
+    ack({ok:true,log:comparison.snapshot(session,ai.comparisonBoxes(),reviewerDraft.text)});
+  });
   s.on('setGeminiKey',(data,ack)=>setGeminiKey(s,data,ack));
   s.on('getGeminiDictionary',(_,ack)=>{
     if(typeof ack!=='function')return;
@@ -270,7 +293,7 @@ function connect(s){
     if(!admission.ok){if(typeof ack==='function')ack(admission);return;}
     if(ai)s.leave(deskChannel);
     reviewer=s.id;s.join(reviewChannel);if(authority()!==displayAuthority)resetClock();
-    if(typeof ack==='function')ack({...admission,session,mode,sendAllAvailable:!!ai,aiBoxes:ai?.list(),aiAcquiredId:ai?.acquiredId,raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
+    if(typeof ack==='function')ack({...admission,session,mode,comparisonLogAvailable:!!ai,sendAllAvailable:!!ai,aiBoxes:ai?.list(),aiAcquiredId:ai?.acquiredId,raw,history,presentedCaption:displayItem?.presented?displayItem:null,waiting:waiting.slice(),display,settings,inputs,presence:presence(),active,throughMode,columnsInitialized});
   });
   s.on('takeAiReviewBox',(data,ack)=>{
     if(typeof ack!=='function')return;
@@ -279,7 +302,7 @@ function connect(s){
     ack(ai.take(data.id));
   });
   s.on('saveReviewDraft',(draft,ack)=>{
-    const result=s.id===reviewer?reviewerDraft.save(draft):{ok:false,error:'校閲者として未接続です'};
+    const result=saveDraft(draft);
     if(typeof ack==='function')ack(result);
   });
   s.on('setSettings',(change={},ack)=>{
@@ -330,6 +353,7 @@ function connect(s){
       revision=accepted.revision;
       const items=enqueueCaption(lines);
       resultId=items[0].id;
+      comparison?.send(request,lines,items[0].at);
     }
     else return reply({ok:false,error:'送出操作が不正です'});
     const result={ok:true,id:resultId,queued:request.kind!=='out'};

@@ -1,4 +1,5 @@
 'use strict';
+const {boxRecognition} = require('./comparison-log');
 
 const maxClipBytes = 8 * 1024 * 1024;
 const totalLimit = 96 * 1024 * 1024;
@@ -49,7 +50,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDe
         if (canJoinDesk && !canJoinDesk(socket)) return reply({ok:false,error:'校閲担当として接続中です。'});
         if (desk && desk !== socket.id) return reply({ok:false,error:'デスクは接続中です'});
         desk = socket.id;
-        reply({ok:true,mode});
+        reply({ok:true,mode,comparisonLogAvailable:!!ai});
       });
       socket.on('leaveDesk', (_, reply) => {
         if (typeof reply === 'function') reply({ok:leaveDesk(socket)});
@@ -84,7 +85,7 @@ module.exports = function createBoxes(broadcast, {mode='standard', ai, canJoinDe
         release(box);
         Object.assign(box, {text, version, approx:!!approx, clip});
         bytesInUse += clip?.length || 0;
-        if (ai) ai.accept({id:box.id,version,text,approx:box.approx});
+        if (ai) ai.accept({id:box.id,version,text,approx:box.approx,recognition:boxRecognition(data.recognition)});
         else update(box);
         reply({ok:true});
       });

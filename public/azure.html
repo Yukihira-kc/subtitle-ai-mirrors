@@ -62,7 +62,7 @@
 
 const $=id=>document.getElementById(id);
 
-</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=complete-ai-release"></script><script src="/gemini-dictionary.js?v=desk-key-1"></script><script src="/desk-room.js?v=desk-key-2"></script><script src="/speech-usage.js"></script><script>
+</script><script src="/mirror-config.js"></script><script src="/socket.io.min.js"></script><script src="/connection.js?v=complete-ai"></script><script src="/room-client.js?v=comparison-1"></script><script src="/gemini-dictionary.js?v=desk-key-1"></script><script src="/desk-room.js?v=comparison-1"></script><script src="/speech-usage.js"></script><script>
 const editor=$('pool');
 let composing=false,confirmedValue='',marks=[],pending=[],editStart=0;
 function appendPending(){
@@ -84,6 +84,7 @@ function syncEdit(){
  protect(marks.slice(0,b));
  const replaced=marks.slice(a,b).filter(Boolean);
  const range=replaced.length?replaced[0]===replaced.at(-1)?replaced[0]:{get begin(){return replaced[0].begin},get finish(){return replaced.at(-1).finish},approx:true}:null;
+ if(comparisonLogAvailable && range && range!==replaced[0])range.recognitionSources=recognitionSources(replaced);
  const insertion=Array.from({length:c-a},(_,i)=>value[a+i]==='\n'?null:range);
  marks=marks.slice(0,a).concat(insertion,marks.slice(b));confirmedValue=value;draw()
 }
@@ -281,6 +282,7 @@ async function stop(message){
 }
 function ticks(value){return Number(value)/10000000}
 let hypothesis='',refs=[],locked=0,utterance=1;
+let azureSource=null;
 const deferred=[];
 function protect(ranges){
  for(const r of ranges){const i=refs.indexOf(r);if(i>=0)locked=Math.max(locked,i+1)}
@@ -300,12 +302,12 @@ function boxAudio(box){
  box.audio=box.finish>box.begin?clip(box.begin,box.finish):null;
  return publishBox(box)
 }
-function receive(result,final,base=0){
- if(composing){deferred.push([result,final,base]);return}
+function receive(result,final,base=0,engine=selectedTier){
+ if(composing){deferred.push([result,final,base,engine]);return}
  if(!result){
   // A stopped run can end on an interim hypothesis. Keep its text and timing references.
   if(hypothesis && editor.value && !editor.value.endsWith('\n'))pending.push({text:'\n',range:null});
-  hypothesis='';refs=[];locked=0;utterance++;appendPending();draw();return
+  azureSource=null;hypothesis='';refs=[];locked=0;utterance++;appendPending();draw();return
  }
  const text=result.text||'';
  if(!text&&!final)return;
@@ -337,6 +339,13 @@ function receive(result,final,base=0){
   for(let j=left;j<i;j++){times[j].begin=edge+(right-edge)*(j-left)/(i-left);times[j].finish=edge+(right-edge)*(j+1-left)/(i-left)}
   if(i<times.length){edge=times[i].finish;left=i+1}
  }
+ if(comparisonLogAvailable && times.length){
+  azureSource ||= {engine};
+  azureSource.text=text;
+  azureSource.partial=!final;
+  azureSource.spans=times.map(({begin,finish},i)=>({begin,finish,from:i,to:i+1}));
+  for(const range of times)range.recognitionSource=azureSource;
+ }
  const oldRefs=refs, keep=Math.max(prefix,locked);
  const cutIndex=mapped(keep);
  for(let i=0;i<oldRefs.length;i++){
@@ -359,7 +368,7 @@ function receive(result,final,base=0){
  for(const box of boxes)if(box.utterance===utterance)boxAudio(box);
  if(final){
   if(editor.value&&!editor.value.endsWith('\n'))pending.push({text:'\n',range:null});
-  hypothesis='';refs=[];locked=0;utterance++;appendPending()
+  azureSource=null;hypothesis='';refs=[];locked=0;utterance++;appendPending()
  }
  draw()
 }
@@ -383,7 +392,7 @@ $('start').onclick=async()=>{
  }
  if(!window.SpeechSDK){status('Speech SDK の読み込みに失敗しました。');return}
  fields.region=region;fields.key=key;
- const run={start:total,key};currentRun=run;lockResource(true);
+ const run={start:total,key,engine:selectedTier};currentRun=run;lockResource(true);
  setDeskRecognitionBusy(true);status('マイクと Azure に接続中');
  try{
   context=new AudioContext();await context.resume();
@@ -394,8 +403,18 @@ $('start').onclick=async()=>{
   config.requestWordLevelTimestamps();
   push=SpeechSDK.AudioInputStream.createPushStream(SpeechSDK.AudioStreamFormat.getWaveFormatPCM(rate,16,1));
   recognizer=new SpeechSDK.SpeechRecognizer(config,SpeechSDK.AudioConfig.fromStreamInput(push));
-  recognizer.recognizing=(_,e)=>{if(currentRun!==run)return;receive(e.result,false,run.start/rate);$('partial').textContent='途中認識中'};
-  recognizer.recognized=(_,e)=>{if(currentRun!==run)return;if(e.result.reason===SpeechSDK.ResultReason.RecognizedSpeech)receive(e.result,true,run.start/rate);$('partial').textContent='発話を待っています'};
+  recognizer.recognizing=(_,e)=>{if(currentRun!==run)return;receive(e.result,false,run.start/rate,run.engine);$('partial').textContent='途中認識中'};
+  recognizer.recognized=(_,e)=>{
+   if(currentRun!==run)return;
+   if(e.result.reason===SpeechSDK.ResultReason.RecognizedSpeech){
+    if(comparisonLogAvailable){
+     const id=e.result.resultId ? recordingKey+'/'+e.result.resultId : undefined;
+     recordFinalRecognition(e.result.text,run.engine,id);
+    }
+    receive(e.result,true,run.start/rate,run.engine);
+   }
+   $('partial').textContent='発話を待っています'
+  };
   recognizer.canceled=(_,e)=>{if(currentRun===run && e.reason===SpeechSDK.CancellationReason.Error)stop('Azure Speech 停止 '+e.errorCode+' '+safeError(e.errorDetails,key))};
   await sdkCall((ok,error)=>recognizer.startContinuousRecognitionAsync(ok,error));
   if(currentRun!==run||stopping)return;

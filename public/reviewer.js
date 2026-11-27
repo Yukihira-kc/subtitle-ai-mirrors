@@ -4,10 +4,18 @@ let throughMode=false;
 const sendAllOnF12=$('send-all-on-f12');
 let sendAllAvailable=false;
 sendAllOnF12.checked=false;
+const comparisonExport=$('comparison-log-export');
+let comparisonAvailable=false, comparisonAcquiredId=0, exportingComparison=false;
 const reviewDictionary=GeminiDictionary.create(socket);
 const aiReview=ReviewerBoxes.create(SubtitleConnection, {
   available:()=>ready && socket.connected && !composing && !pending && !blocked,
-  take:id=>socket.timeout(4000).emitWithAck('takeAiReviewBox',{id,session}),
+  take:async id=>{
+    const connection=socket.id, requestedSession=session;
+    const result=await socket.timeout(4000).emitWithAck('takeAiReviewBox',{id,session});
+    if(result?.ok && result.box?.id===id && socket.id===connection && session===requestedSession)
+      comparisonAcquiredId=Math.max(comparisonAcquiredId,id);
+    return result;
+  },
 });
 const columnsStorageKey=SubtitleConnection.storageKey('columns');
 const logBackup=SubtitleLogBackup.create({scope:SubtitleConnection.storageKey('log-backup'),roomId:SubtitleConnection.roomId});
@@ -24,14 +32,16 @@ function scheduleThrough(){
   if(autoTimer!==null||!throughMode||!ready||pending||blocked||composing)return;
   autoTimer=setTimeout(()=>{
     autoTimer=null;
-    if(throughMode&&ready&&!pending&&!blocked&&!composing)submit(1);
+    if(throughMode&&ready&&!pending&&!blocked&&!composing)submit(1,true);
   },0);
 }
 const storageKey=SubtitleConnection.storageKey('draft');
 try{const saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');if(saved){edit.textContent=saved.draft||'';session=saved.session||'';seen=new Set(saved.seen||[]);if(saved.pending){blocked=true;$('conflict').style.display='inline-block';}}}catch(_){}
 function save(){try{sessionStorage.setItem(storageKey,JSON.stringify({draft:edit.textContent,session,seen:[...seen],pending:!!pending||blocked}));}catch(_){}}
 function draftPayload(){
-  return {session,revision:reviewDraft.revision,inputId,text:editorText()};
+  const draft={session,revision:reviewDraft.revision,inputId,text:editorText()};
+  if(comparisonAvailable)draft.comparisonAcquiredId=comparisonAcquiredId;
+  return draft;
 }
 function queueDraftSave(delay=80){
   if(!reviewDraft||!draftChanged||draftTimer!==null||!ready||pending||composing||blocked)return;
@@ -70,7 +80,36 @@ function requireDraftReview(message){
   blocked=true;$('conflict').style.display='inline-block';status(message);buttons();save();
 }
 function status(text){$('status').textContent=text;}
-function buttons(){['send-one','send-two','out'].forEach(id=>$(id).disabled=!ready||!!pending||blocked||composing);aiReview.refreshControls();}
+function buttons(){
+  ['send-one','send-two','out'].forEach(id=>$(id).disabled=!ready||!!pending||blocked||composing);
+  comparisonExport.hidden=!comparisonAvailable;
+  comparisonExport.disabled=!ready||!!pending||composing||exportingComparison;
+  aiReview.refreshControls();
+}
+comparisonExport.onclick=async ()=>{
+  if(comparisonExport.hidden||comparisonExport.disabled)return;
+  exportingComparison=true;
+  buttons();
+  const requestedSession=session;
+  try{
+    const options=draftChanged&&reviewDraft&&!blocked ? {draft:draftPayload()} : {};
+    const result=await socket.timeout(8000).emitWithAck('getComparisonLog',options);
+    if(!result?.ok || result.log?.session!==requestedSession || session!==requestedSession)
+      throw new Error('比較ログを取得できませんでした。接続を確認してください。');
+    const html=ComparisonLog.html(result.log);
+    const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));
+    try{
+      const link=document.createElement('a');
+      link.href=url;link.download='比較ログ.html';link.click();
+    }finally{
+      setTimeout(()=>URL.revokeObjectURL(url),60000);
+    }
+  }catch(_){
+    status('比較ログを保存できませんでした。接続を確認して再試行してください。');
+  }finally{
+    exportingComparison=false;buttons();
+  }
+};
 function applySettings(s){if(composing||pending){deferredSettings=s;return;}settings={...s,textColor:s.textColor||'#ffffff',outline:s.outline!==false,fontWeight:s.fontWeight==='bold'?'bold':'normal'};$('columns').value=settings.columns;$('lineCount').value=settings.lineCount;$('mode').value=settings.mode;$('keyColor').value=settings.keyColor;$('keyColorCode').value=String(settings.keyColor).toUpperCase();$('captionFont').value=settings.captionFont||'noto-sans-jp';$('textColor').value=settings.textColor;$('outline').value=settings.outline?'on':'off';$('fontWeight').value=settings.fontWeight;edit.style.width='auto';edit.style.fontFamily=CaptionLayout.font;const parent=$('edit-scroll').getBoundingClientRect(),parentStyle=getComputedStyle($('edit-scroll')),rect=edit.getBoundingClientRect(),style=getComputedStyle(edit),edge=(rect.left-parent.left)-parseFloat(parentStyle.borderLeftWidth||0)-parseFloat(style.borderLeftWidth||0)+parseFloat(style.paddingLeft);const guide=$('edit-guide');guide.style.left=edge+'px';guide.style.fontFamily=style.fontFamily;guide.style.fontSize=style.fontSize;guide.style.fontWeight=style.fontWeight;guide.innerHTML='';const marker=document.createElement('span');marker.textContent='あ'.repeat(settings.columns);guide.appendChild(marker);edit.style.backgroundImage='none';fitEditorTerminalPeriod();$('fontSize').value=settings.fontSize;CaptionView.render($('capture'),currentCaption,settings);}
 for(let i=10;i<=40;i++){const o=document.createElement('option');o.value=i;o.textContent=i;$('columns').appendChild(o);}
 function emitSettings(){if(ready&&!pending&&!composing)socket.emit('setSettings',{columns:Number($('columns').value),mode:$('mode').value,keyColor:$('keyColor').value,fontSize:Number($('fontSize').value),lineCount:Number($('lineCount').value),captionFont:$('captionFont').value,textColor:$('textColor').value,outline:$('outline').value==='on',fontWeight:$('fontWeight').value});}
@@ -82,6 +121,8 @@ function receive(item){
   if(reviewDraft){
     if(item.id<=inputId)return;
     inputId=item.id;
+    if(comparisonAvailable && Number.isSafeInteger(item.boxId))
+      comparisonAcquiredId=Math.max(comparisonAcquiredId,item.boxId);
   }else{
     if(seen.has(item.id))return;
     seen.add(item.id);
@@ -121,7 +162,7 @@ function prefixRange(end){const walker=document.createTreeWalker(edit,NodeFilter
 function editorText(){return String(edit.textContent||'').replace(/\r\n?/g,'\n');}
 function manualRows(text,count){const source=String(text),parts=source.split('\n'),rows=[];let end=0;for(let i=0;i<Math.min(count,parts.length);i++){const value=parts[i];if(!value&&i===0)break;end+=value.length+(i<parts.length-1?1:0);rows.push({text:value,end});}return rows;}
 function normalizeSent(text){const chars=[...String(text)];if(chars.length===settings.columns+1&&/[。、]$/.test(text))chars[chars.length-1]=chars[chars.length-1]==='。'?'｡':'､';return chars.join('');}
-function submit(selection){
+function submit(selection,automatic=false){
   if(!ready||pending||blocked||composing)return;
   const text=editorText();
   let end, request;
@@ -140,6 +181,7 @@ function submit(selection){
     request={id:operationId(),kind:'send',lines:rows.map(r=>r.text)};
     if(reviewDraft){request.draft=draftPayload();request.consumed=end;}
   }
+  if(comparisonAvailable && automatic)request.automatic=true;
   const range=prefixRange(end);
   pending={request,range,source:range.toString(),generation:draftGeneration};save();buttons();transmit();
 }
@@ -264,6 +306,8 @@ function loadReviewer(result){
   }
   session=result.session;logBackup.start(session);
   aiReview.load(result.mode,result.aiBoxes||[],result.aiAcquiredId);
+  comparisonAvailable=aiReview.enabled&&result.comparisonLogAvailable===true;
+  comparisonAcquiredId=aiReview.enabled ? result.aiAcquiredId||0 : 0;
   sendAllAvailable=aiReview.enabled&&result.sendAllAvailable===true;
   showF12Setting();
   reviewDictionary.join(result.mode);

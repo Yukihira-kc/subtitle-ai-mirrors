@@ -2,6 +2,7 @@
 const deskSocket = SubtitleConnection.connect();
 let deskListener, currentDeskState, deskOnline = false;
 let deskMode = 'standard';
+let comparisonLogAvailable = false;
 let haveSnapshot = false, deskRetry, resolveRoomReady;
 let deskConnection = {type:'waiting',message:'デスクに接続中…'};
 const roomReady = new Promise(resolve => {resolveRoomReady=resolve;});
@@ -53,6 +54,7 @@ function joinDesk(socketId) {
       return;
     }
     deskMode=result.mode || deskMode;
+    comparisonLogAvailable=deskMode==='complete-ai' && result.comparisonLogAvailable===true;
     setDeskConnection('ready');
     resolveRoomReady();
     for(const ready of deskWaiters.splice(0))ready();

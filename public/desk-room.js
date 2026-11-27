@@ -6,6 +6,60 @@ const role='デスク';
 let deskConnected=false, switchingEngine=false, deskRecognitionBusy=false;
 let deskConnectionMessage='';
 const recordingKey = crypto.randomUUID();
+const recognitionOutbox = new Map();
+let sendingRecognition=false, recognitionRetry;
+
+function recordFinalRecognition(text,engine,id){
+  if(!comparisonLogAvailable || !text?.trim())return;
+  if(!id || id.length>256)id=crypto.randomUUID();
+  recognitionOutbox.set(id,{id,text,engine,at:Date.now()});
+  sendRecognition();
+}
+async function sendRecognition(){
+  if(sendingRecognition || !comparisonLogAvailable || !deskConnected || !recognitionOutbox.size)return;
+  clearTimeout(recognitionRetry);
+  sendingRecognition=true;
+  try{
+    for(const [id,event] of recognitionOutbox){
+      if(!deskConnected || !comparisonLogAvailable)break;
+      const reply=await deskSocket.timeout(5000).emitWithAck('comparisonRecognition',event);
+      if(!reply?.ok && reply?.retryable!==false)break;
+      recognitionOutbox.delete(id);
+    }
+  }catch{
+    // Keep this event's ID when the acknowledgement is lost.
+  }finally{
+    sendingRecognition=false;
+    if(deskConnected && comparisonLogAvailable && recognitionOutbox.size)recognitionRetry=setTimeout(sendRecognition,2000);
+  }
+}
+function recognitionSources(ranges){
+  const sources=new Set();
+  for(const range of ranges){
+    if(range?.recognitionSource)sources.add(range.recognitionSource);
+    else if(range?.recognitionSources)for(const source of range.recognitionSources)sources.add(source);
+  }
+  return [...sources];
+}
+function boxRecognition(box,ranges){
+  const sources=recognitionSources(ranges);
+  if(!sources.length)return;
+  const engine=sources[0].engine, parts=[];
+  let partial=false, approximate=box.approx || sources.length>1;
+  for(const source of sources){
+    if(source.engine!==engine)return;
+    const spans=source.spans.filter(span=>
+      span.begin===span.finish ? span.begin>=box.begin && span.finish<=box.finish :
+      span.finish>box.begin && span.begin<box.finish);
+    if(!spans.length)return;
+    const first=spans[0],last=spans.at(-1);
+    parts.push(source.text.slice(first.from,last.to));
+    partial ||= source.partial;
+    approximate ||= first.begin<box.begin || last.finish>box.finish;
+  }
+  const text=parts.join('\n');
+  if(text.trim())return {text,engine,partial,approximate:!!approximate || text!==box.text};
+}
 let uploading=false, retryError='', deskFeedback='';
 let rejectedUpload=null;
 const sleep = ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -91,7 +145,7 @@ function showDelivery(){
     }
   }
 }
-function publishBox(box) {
+function publishBox(box,ranges) {
   if (deskMode==='complete-ai') {
     if (!box.audio || box.audio.size<=44) {
       deskFeedback='この行に対応する録音がありません。音声が届いてから送るか、行の区切りを修正してください。';
@@ -104,6 +158,7 @@ function publishBox(box) {
       return false;
     }
     box.forReview=true;
+    if(comparisonLogAvailable)box.recognition=boxRecognition(box,ranges || box.ranges || []);
   }
   deskFeedback='';
   if (!box.key) box.key=recordingKey+'/'+box.id;
@@ -122,6 +177,7 @@ async function uploadBoxes(){
     const {version,text,approx}=box;
     const meta={key,version,text,approx:!!approx};
     if(box.forReview)meta.forReview=true;
+    if(box.recognition)meta.recognition=box.recognition;
     const clip=box.audio;
     showDelivery();
     try {
@@ -182,7 +238,7 @@ function applyDeskState(change){
     deskConnectionMessage=change.message;
     syncGeminiConnection();
     updateDeskControls();showDelivery();
-    if(deskConnected){configureDeskLinks();deskDictionary.join(deskMode);}
+    if(deskConnected){configureDeskLinks();deskDictionary.join(deskMode);sendRecognition();}
   }
 }
 function draw(){

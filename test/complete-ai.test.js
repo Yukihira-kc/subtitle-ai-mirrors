@@ -618,3 +618,57 @@ test('デスクの席は所有中の接続が明示的に返せば切断前で�
   assert.equal((await call(successor,'setGeminiKey',{key:successorKey})).ok,true);
   assert.equal((await call(successor,'publishBox',box)).ok,true);
 });
+
+test('比較ログは校閲だけが取得し、認識・入力原稿・校正文・改ページ前の送出を区別する', async t => {
+  const app = await startServer(t,{GEMINI_REVIEW_TIMEOUT_MS:'150'});
+  const room = await app.room('比較',{mode:'complete-ai'});
+  const standard = await app.room('通常');
+  const [desk,editor,other,standardReviewer] = await Promise.all([app.connect(room),app.connect(room),app.connect(room),app.connect(standard)]);
+  const event = {id:'asr/1',text:'認識原文',engine:'vosk',at:900};
+  const source = {text:'認識原',engine:'vosk',partial:true,approximate:true};
+  const admission = await call(editor,'joinReviewer',reviewer);
+  assert.equal(admission.comparisonLogAvailable,true);
+  assert.equal((await call(standardReviewer,'joinReviewer',reviewer)).comparisonLogAvailable,false);
+  for (const client of [desk,other,standardReviewer]) assert.equal((await call(client,'getComparisonLog',{})).ok,false);
+  assert.equal((await call(other,'deskState',{})).ok,true);
+  assert.equal((await call(other,'comparisonRecognition',event)).ok,false);
+  await joinGeminiDesk(desk);
+  assert.equal((await call(desk,'getComparisonLog',{})).ok,false);
+  assert.equal((await call(desk,'comparisonRecognition',event)).ok,true);
+  assert.equal((await call(desk,'comparisonRecognition',{...event,text:'再送'})).ok,true);
+  const ready = waitForBox(editor,box=>box.id===2 && box.delivered);
+  const publish = (key,text,recognition) => call(desk,'publishBox',
+    {key,text,recognition,version:1,forReview:true,clip:wave(120)});
+  assert.equal((await publish('1','デスク編集',source)).ok,true);
+  assert.equal((await publish('2','処理できない原文')).ok,true);
+  await ready;
+  const item = once(editor,'reviewItem');
+  const take = id=>call(editor,'takeAiReviewBox',{id,session:admission.session});
+  assert.equal((await take(1)).ok,true);
+  const [{id:inputId}] = await item;
+  const final = '人の校閲で句読点まで直した字幕です。'.repeat(3);
+  const payload = {session:admission.session,revision:admission.reviewDraft.revision,inputId,
+    comparisonAcquiredId:1,text:final};
+  const unsubmitted = await call(editor,'getComparisonLog',{draft:payload});
+  assert.equal(unsubmitted.log.pendingText,final);
+  assert.equal(unsubmitted.log.groups[0].complete,false);
+  assert.equal((await take(2)).ok,true);
+  const action = {id:'send-comparison',kind:'send-all',draft:payload};
+  const send = await call(editor,'captionAction',action);
+  assert.equal(send.ok,true);
+  assert.deepEqual(await call(editor,'captionAction',action),send);
+  assert.equal((await call(editor,'getComparisonLog',{draft:payload})).ok,false);
+  const {log} = await call(editor,'getComparisonLog',{});
+  assert.deepEqual(log.recognition,[event]);
+  assert.deepEqual(log.boxes,[
+    {id:1,original:'デスク編集',corrected:'校正：デスク編集',recognition:source,state:'ready'},
+    {id:2,original:'処理できない原文',corrected:null,recognition:null,state:'audio-only'},
+  ]);
+  assert.equal(log.pendingText,'');
+  assert.deepEqual(log.groups.map(g=>[g.boxIds,g.complete]),[[[1],true],[[2],false]]);
+  assert.equal(log.groups[0].sends.length,1);
+  assert.equal(log.groups[0].sends[0].text,final);
+  assert.equal(log.groups[0].sends[0].id,action.id);
+  assert.equal(log.groups[0].sends[0].automatic,false);
+  assert.equal(typeof log.groups[0].sends[0].at,'number');
+});

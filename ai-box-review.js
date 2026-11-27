@@ -32,7 +32,7 @@ async function reviewUntilAbort(review, request) {
   }
 }
 
-function createAiBoxReview({schedule, provider, clip, notify, appendToDraft, retainReplay, dictionary, timeoutMs=defaultDeadlineMs}) {
+function createAiBoxReview({schedule, provider, clip, notify, appendToDraft, onTake, retainReplay, dictionary, timeoutMs=defaultDeadlineMs}) {
   const entries = new Map();
   const lifetime = new AbortController();
   const deadlineMs = Number.isSafeInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 60_000
@@ -95,13 +95,17 @@ function createAiBoxReview({schedule, provider, clip, notify, appendToDraft, ret
   return {
     get available() { return !!provider(); },
     get acquiredId() { return acquiredId; },
-    accept({id,version,approx,text}) {
-      const entry = {id,version,approx,original:text,corrected:'',error:'',state:'queued',attempt:0,delivered:false,
+    accept({id,version,approx,text,recognition=null}) {
+      const entry = {id,version,approx,original:text,recognition,corrected:'',error:'',state:'queued',attempt:0,delivered:false,
         dictionary:dictionary?.()};
       entries.set(id,entry);
       update(entry);
       const review = provider();
       schedule(() => run(entry,review));
+    },
+    comparisonBoxes() {
+      return [...entries.values()].map(({id,original,corrected,recognition,state})=>
+        ({id,original,corrected:corrected || null,recognition,state}));
     },
     list() { return [...entries.values()].map(card); },
     status(id) { const entry = entries.get(id); return entry && status(entry); },
@@ -114,6 +118,7 @@ function createAiBoxReview({schedule, provider, clip, notify, appendToDraft, ret
         if (entry.state === 'ready') appendToDraft(id,entry.corrected);
         if (acquiredId) retainReplay(acquiredId);
         acquiredId = id;
+        onTake?.(id,entry.state === 'audio-only');
         update(entry);
       }
       return {ok:true,box:card(entry)};
