@@ -279,7 +279,7 @@ window.ReviewerBoxes = {
       cards.clear();
       list.replaceChildren();
       enabled = mode === 'complete-ai';
-      title.textContent = enabled ? 'Gemini校正・原音' : 'A・B・C 入力レビュー';
+      title.textContent = enabled ? 'AI校正・原音リスト' : 'A・B・C 入力レビュー';
       get('monitors').hidden = enabled;
       list.hidden = !enabled;
       get('ai-review-tools').hidden = acquired.hidden = !enabled;
